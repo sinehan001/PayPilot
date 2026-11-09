@@ -1,0 +1,251 @@
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { db } from "./db.ts";
+import { logAudit } from "./audit.ts";
+import { evaluateCancel, evaluateRefund, getPolicy } from "./policy.ts";
+import * as store from "./store.ts";
+import { paypalConfigured } from "./paypal.ts";
+import { ppCancelSubscription, ppRefundCapture } from "./paypalOps.ts";
+
+export interface ToolCtx {
+  /** The authenticated customer. Tools can only touch this customer's data. */
+  customer: string;
+  /** Per-message budget of account changes. Stops "refund everything" style blast radius. */
+  writes?: { used: number; max: number };
+}
+
+export type ToolResult =
+  | { status: "ok"; data: unknown }
+  | { status: "pending_approval"; approvalId: string; message: string }
+  | { status: "denied"; reason: string }
+  | { status: "error"; message: string };
+
+export interface ToolDef {
+  name: string;
+  description: string;
+  /** "read" never changes state; "write" can change money or subscriptions and goes through policy. */
+  kind: "read" | "write";
+  /** Gemini-style function parameter schema. */
+  parameters: Record<string, unknown>;
+  zod: z.ZodTypeAny;
+  run(args: any, ctx: ToolCtx): ToolResult | Promise<ToolResult>;
+}
+
+const obj = (properties: Record<string, unknown>, required: string[] = []) => ({ type: "OBJECT", properties, required });
+
+export const tools: ToolDef[] = [
+  {
+    name: "list_charges",
+    description:
+      "List the customer's recent charges with their subscription and any merchant note. Optional filters by amount range, days back, or text in the description.",
+    kind: "read",
+    parameters: obj({
+      days: { type: "INTEGER", description: "Only charges from the last N days" },
+      min_amount: { type: "NUMBER" },
+      max_amount: { type: "NUMBER" },
+      text: { type: "STRING", description: "Match against the charge description" },
+    }),
+    zod: z.object({
+      days: z.number().int().positive().max(730).optional(),
+      min_amount: z.number().nonnegative().optional(),
+      max_amount: z.number().nonnegative().optional(),
+      text: z.string().max(100).optional(),
+    }),
+    run(a, ctx) {
+      const charges = store.listCharges(ctx.customer, { days: a.days, min: a.min_amount, max: a.max_amount, text: a.text });
+      const subs = store.listSubscriptions(ctx.customer);
+      return { status: "ok", data: { charges, subscriptions: subs } };
+    },
+  },
+  {
+    name: "get_subscription",
+    description: "Get one subscription by id: product, price, status, start date and next charge date.",
+    kind: "read",
+    parameters: obj({ subscription_id: { type: "STRING" } }, ["subscription_id"]),
+    zod: z.object({ subscription_id: z.string().regex(/^S-\d+$/) }),
+    run(a, ctx) {
+      const s = store.getSubscription(a.subscription_id);
+      if (!s || s.customer !== ctx.customer) return { status: "error", message: "Subscription not found." };
+      return { status: "ok", data: s };
+    },
+  },
+  {
+    name: "cancel_subscription",
+    description: "Cancel a subscription so it stops renewing. Only use when the customer clearly asks to cancel.",
+    kind: "write",
+    parameters: obj({ subscription_id: { type: "STRING" }, reason: { type: "STRING" } }, ["subscription_id", "reason"]),
+    zod: z.object({ subscription_id: z.string().regex(/^S-\d+$/), reason: z.string().max(300) }),
+    run(a, ctx) {
+      const s = store.getSubscription(a.subscription_id);
+      if (!s || s.customer !== ctx.customer) return { status: "error", message: "Subscription not found." };
+      if (s.status === "CANCELLED") return { status: "error", message: "Subscription is already cancelled." };
+      const d = evaluateCancel(getPolicy());
+      if (d.decision === "allow") return executeCancel(s.id, a.reason, "auto-policy");
+      return queue("cancel", { subscription_id: s.id, product: s.product, reason: a.reason }, d.reason);
+    },
+  },
+  {
+    name: "request_refund",
+    description:
+      "Request a refund for one charge. The merchant policy decides if it is auto-approved, needs human approval, or is denied. Never promise the outcome.",
+    kind: "write",
+    parameters: obj(
+      { charge_id: { type: "STRING" }, amount: { type: "NUMBER" }, reason: { type: "STRING" } },
+      ["charge_id", "amount", "reason"],
+    ),
+    zod: z.object({ charge_id: z.string().regex(/^C-\d+$/), amount: z.number().positive(), reason: z.string().max(300) }),
+    run(a, ctx) {
+      const c = store.getCharge(a.charge_id);
+      if (!c || c.customer !== ctx.customer) return { status: "error", message: "Charge not found." };
+      const d = evaluateRefund(getPolicy(), {
+        amount: a.amount,
+        chargeAmount: c.amount,
+        chargeAgeDays: store.chargeAgeDays(c),
+        alreadyRefunded: c.status === "REFUNDED",
+        refundedToday: store.refundedToday(),
+      });
+      if (d.decision === "deny") return { status: "denied", reason: d.reason };
+      if (d.decision === "needs_approval")
+        return queue("refund", { charge_id: c.id, amount: a.amount, description: c.description, reason: a.reason }, d.reason);
+      return executeRefund(c.id, a.amount, a.reason, "auto-policy");
+    },
+  },
+];
+
+const live = () => paypalConfigured();
+
+async function executeRefund(chargeId: string, amount: number, reason: string, by: string): Promise<ToolResult> {
+  const c = store.getCharge(chargeId)!;
+  let paypal: { refund_id: string; status: string } | undefined;
+  if (c.paypal_id && live()) {
+    try {
+      const r = await ppRefundCapture(c.paypal_id, amount, reason, `refund-${chargeId}-${amount.toFixed(2)}`);
+      paypal = { refund_id: r.id, status: r.status };
+      store.unlinkPaypal(chargeId); // a real capture can only be refunded once
+    } catch (e) {
+      logAudit("system", "paypal_error", `PayPal refund failed for ${chargeId}`, { message: (e as Error).message });
+      return { status: "error", message: "PayPal could not process the refund right now. Nothing was changed." };
+    }
+  }
+  store.refundCharge(chargeId);
+  logAudit(by, "refund_executed", `Refunded $${amount.toFixed(2)} on ${chargeId}${paypal ? " via PayPal sandbox" : " (demo record)"}`, {
+    charge_id: chargeId,
+    amount,
+    reason,
+    paypal: paypal ?? null,
+  });
+  return { status: "ok", data: { refunded: chargeId, amount, live: Boolean(paypal), paypal_refund_id: paypal?.refund_id ?? null } };
+}
+
+async function executeCancel(subscriptionId: string, reason: string, by: string): Promise<ToolResult> {
+  const s = store.getSubscription(subscriptionId)!;
+  let paypal: { status: string } | undefined;
+  if (s.paypal_id && live()) {
+    try {
+      await ppCancelSubscription(s.paypal_id, reason);
+      paypal = { status: "CANCELLED" };
+      store.unlinkPaypal(subscriptionId);
+    } catch (e) {
+      logAudit("system", "paypal_error", `PayPal cancel failed for ${subscriptionId}`, { message: (e as Error).message });
+      return { status: "error", message: "PayPal could not cancel the subscription right now. Nothing was changed." };
+    }
+  }
+  store.cancelSubscription(subscriptionId);
+  logAudit(by, "cancel_executed", `Cancelled ${s.product} (${s.id})${paypal ? " via PayPal sandbox" : " (demo record)"}`, {
+    subscription_id: s.id,
+    reason,
+    paypal: paypal ?? null,
+  });
+  return { status: "ok", data: { cancelled: s.id, product: s.product, live: Boolean(paypal) } };
+}
+
+function queue(kind: "refund" | "cancel", payload: Record<string, unknown>, reason: string): ToolResult {
+  const id = "AP-" + randomUUID().slice(0, 8);
+  db.prepare("insert into approvals(id,ts,kind,payload,reason,status) values(?,?,?,?,?,'PENDING')").run(
+    id,
+    new Date().toISOString(),
+    kind,
+    JSON.stringify(payload),
+    reason,
+  );
+  logAudit("system", "approval_requested", `Approval ${id} requested: ${kind}`, { id, kind, payload, reason });
+  return {
+    status: "pending_approval",
+    approvalId: id,
+    message: `A human must approve this ${kind}. ${reason}`,
+  };
+}
+
+export interface ApprovalRow {
+  id: string;
+  ts: string;
+  kind: "refund" | "cancel";
+  payload: string;
+  reason: string;
+  status: "PENDING" | "APPROVED" | "REJECTED";
+  decided_ts: string | null;
+}
+
+export function listApprovals(status?: string): ApprovalRow[] {
+  return (
+    status
+      ? db.prepare("select * from approvals where status=? order by ts desc").all(status)
+      : db.prepare("select * from approvals order by ts desc").all()
+  ) as ApprovalRow[];
+}
+
+export async function decideApproval(id: string, approve: boolean, decidedBy = "merchant"): Promise<ToolResult> {
+  const row = db.prepare("select * from approvals where id=?").get(id) as ApprovalRow | undefined;
+  if (!row) return { status: "error", message: "Approval not found." };
+  if (row.status !== "PENDING") return { status: "error", message: `Already ${row.status.toLowerCase()}.` };
+  db.prepare("update approvals set status=?, decided_ts=? where id=?").run(
+    approve ? "APPROVED" : "REJECTED",
+    new Date().toISOString(),
+    id,
+  );
+  logAudit(decidedBy, approve ? "approval_granted" : "approval_rejected", `${decidedBy} ${approve ? "approved" : "rejected"} ${id}`, { id });
+  if (!approve) return { status: "ok", data: { id, status: "REJECTED" } };
+  const p = JSON.parse(row.payload);
+  const result =
+    row.kind === "refund"
+      ? await executeRefund(p.charge_id, p.amount, p.reason, decidedBy)
+      : await executeCancel(p.subscription_id, p.reason ?? "approved by merchant", decidedBy);
+  if (result.status === "error") {
+    // Execution failed at PayPal: reopen the approval so it can be retried.
+    db.prepare("update approvals set status='PENDING', decided_ts=null where id=?").run(id);
+  }
+  return result;
+}
+
+/** Validate args with zod, run the tool, and audit every call and result. */
+export async function callTool(name: string, rawArgs: unknown, ctx: ToolCtx): Promise<ToolResult> {
+  const tool = tools.find((t) => t.name === name);
+  if (!tool) {
+    logAudit("agent", "tool_call_rejected", `Unknown tool ${name}`, { name });
+    return { status: "error", message: `Unknown tool: ${name}` };
+  }
+  const parsed = tool.zod.safeParse(rawArgs ?? {});
+  if (!parsed.success) {
+    logAudit("agent", "tool_call_rejected", `Invalid arguments for ${name}`, { args: rawArgs, issues: parsed.error.issues });
+    return { status: "error", message: "Invalid arguments: " + parsed.error.issues.map((i) => i.message).join("; ") };
+  }
+  logAudit("agent", "tool_call", `${name} (${tool.kind})`, { name, args: parsed.data });
+  if (tool.kind === "write" && ctx.writes) {
+    if (ctx.writes.used >= ctx.writes.max) {
+      const denied: ToolResult = {
+        status: "denied",
+        reason: "Only one account change can be made per message. Ask the customer which single item they want, and do it in a separate request.",
+      };
+      logAudit("system", "tool_result", `${name} -> denied (change limit per message)`, { name, status: "denied", reason: denied.reason });
+      return denied;
+    }
+    ctx.writes.used++;
+  }
+  const result = await tool.run(parsed.data, ctx);
+  logAudit("system", "tool_result", `${name} -> ${result.status}`, {
+    name,
+    status: result.status,
+    ...(result.status === "denied" ? { reason: result.reason } : {}),
+  });
+  return result;
+}

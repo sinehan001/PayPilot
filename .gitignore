@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.db
+*.db-journal
+data/
+.DS_Store
+*.log
+
+claude_code_prompt.txt
