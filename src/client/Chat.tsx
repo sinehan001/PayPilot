@@ -138,7 +138,7 @@ export default function Chat({
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col rounded-2xl border border-line bg-white shadow-sm" aria-label="Chat">
-      <div className="relative flex items-center justify-between gap-2 border-b border-line px-3 py-2">
+      <div className="relative flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5 border-b border-line px-3 py-2">
         <button
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
@@ -146,7 +146,10 @@ export default function Chat({
         >
           History ({conversations.length}) {open ? "▴" : "▾"}
         </button>
-        <span className="min-w-0 flex-1 truncate text-center text-sm text-muted">{active ? active.title : "New conversation"}</span>
+        {/* On phones the title gets its own full-width line, so it never squeezes the two buttons. */}
+        <span className="order-last w-full truncate text-left text-xs text-muted sm:order-none sm:w-auto sm:min-w-0 sm:flex-1 sm:text-center sm:text-sm">
+          {active ? active.title : "New conversation"}
+        </span>
         <button
           onClick={() => {
             setOpen(false);
@@ -241,7 +244,7 @@ export default function Chat({
         <button
           type="button"
           onClick={onReview}
-          className="mx-3 mt-2 flex min-h-11 items-center justify-between gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-left text-sm font-medium text-amber-900 lg:hidden"
+          className="mx-3 mb-1 mt-3 flex min-h-11 items-center justify-between gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-left text-sm font-medium text-amber-900 lg:hidden"
         >
           <span>
             {pendingCount} request{pendingCount === 1 ? "" : "s"} waiting for approval
