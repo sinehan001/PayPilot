@@ -23,6 +23,7 @@ const TOOL_LABEL: Record<string, string> = {
   get_subscription: "Checked a subscription",
   cancel_subscription: "Requested a cancellation",
   request_refund: "Requested a refund",
+  check_request_status: "Checked a request",
 };
 
 const RESULT: Record<string, { label: string; cls: string }> = {
@@ -70,6 +71,28 @@ function Chips({ events }: { events: AgentEvent[] }) {
         }
         return null;
       })}
+    </div>
+  );
+}
+
+export function MessageBubble({ m }: { m: Msg }) {
+  return (
+    <div className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+      <div
+        className={`max-w-[88%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed ${
+          m.role === "user"
+            ? "bg-accent text-white"
+            : m.error
+              ? "border border-red-200 bg-red-50 text-red-800"
+              : "border border-line bg-surface text-ink"
+        }`}
+      >
+        <Rich text={m.text} />
+        {m.events && <Chips events={m.events} />}
+        {m.model === "demo-mock" && (
+          <p className="mt-2 text-xs text-amber-700">Live AI was slow, so the scripted demo AI answered. Policy checks still ran.</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -210,23 +233,7 @@ export default function Chat({
         )}
         <div className="space-y-4">
           {messages.map((m, i) => (
-            <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
-              <div
-                className={`max-w-[88%] whitespace-pre-wrap rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed ${
-                  m.role === "user"
-                    ? "bg-accent text-white"
-                    : m.error
-                      ? "border border-red-200 bg-red-50 text-red-800"
-                      : "border border-line bg-surface text-ink"
-                }`}
-              >
-                <Rich text={m.text} />
-                {m.events && <Chips events={m.events} />}
-                {m.model === "demo-mock" && (
-                  <p className="mt-2 text-xs text-amber-700">Live AI was slow, so the scripted demo AI answered. Policy checks still ran.</p>
-                )}
-              </div>
-            </div>
+            <MessageBubble key={i} m={m} />
           ))}
           {busy && (
             <div className="flex justify-start">
@@ -247,9 +254,9 @@ export default function Chat({
           className="mx-3 mb-1 mt-3 flex min-h-11 items-center justify-between gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-left text-sm font-medium text-amber-900 lg:hidden"
         >
           <span>
-            {pendingCount} request{pendingCount === 1 ? "" : "s"} waiting for approval
+            {pendingCount} request{pendingCount === 1 ? "" : "s"} with Acme Digital for review
           </span>
-          <span className="shrink-0 font-semibold text-accent-dark">Review</span>
+          <span className="shrink-0 font-semibold text-accent-dark">View</span>
         </button>
       )}
       {messages.length > 0 && (

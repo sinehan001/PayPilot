@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 import { runAgent } from "./agent.ts";
+import { db } from "./db.ts";
 import { addMessage, clearAllConversations, createConversation, getConversation, getMessages, listConversations } from "./conversations.ts";
 import { listAudit, verifyChain, logAudit } from "./audit.ts";
 import { selectLLM } from "./llm.ts";
@@ -61,6 +62,17 @@ app.get("/api/state", (_req, res) => {
     charges: store.listCharges(store.DEMO_CUSTOMER, {}),
     approvals: listApprovals(),
     policy: getPolicy(),
+  });
+});
+
+app.get("/api/merchant/summary", (_req, res) => {
+  const n = (sql: string) => (db.prepare(sql).get() as { c: number }).c;
+  res.json({
+    pending: n("select count(*) c from approvals where status='PENDING'"),
+    refundedToday: store.refundedToday(),
+    handledByAI: n("select count(*) c from audit where type in ('refund_executed','cancel_executed') and actor='auto-policy'"),
+    blockedByPolicy: n("select count(*) c from audit where type='tool_result' and json_extract(detail,'$.status')='denied'"),
+    conversations: n("select count(*) c from conversations"),
   });
 });
 

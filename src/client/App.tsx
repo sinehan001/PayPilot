@@ -1,27 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Chat, { type Msg } from "./Chat";
-import { AccountPanel, ApprovalsPanel, AuditPanel, PolicyPanel } from "./Panels";
+import MerchantView from "./MerchantView";
+import { AccountPanel, RequestsPanel } from "./Panels";
 import { api, type AgentEvent, type ConversationSummary, type Health, type State, type StoredMessage } from "./api";
 
 const LS_KEY = "paypilot.conversation";
-const lsGet = () => {
+const ROLE_KEY = "paypilot.role";
+const lsGet = (k: string) => {
   try {
-    return localStorage.getItem(LS_KEY);
+    return localStorage.getItem(k);
   } catch {
     return null;
   }
 };
-const lsSet = (id: string | null) => {
+const lsSet = (k: string, v: string | null) => {
   try {
-    if (id) localStorage.setItem(LS_KEY, id);
-    else localStorage.removeItem(LS_KEY);
+    if (v) localStorage.setItem(k, v);
+    else localStorage.removeItem(k);
   } catch {
     /* storage unavailable: the server still keeps everything */
   }
 };
 const toMsg = (m: StoredMessage): Msg => ({ role: m.role, text: m.text, events: m.events, model: m.model ?? undefined, error: m.error });
 
-type Tab = "account" | "approvals" | "audit" | "policy";
+type Role = "customer" | "merchant";
+type Tab = "account" | "requests";
 const DEMO_STEPS = [
   "Why was I charged $14.99?",
   "I don't recognise the $89 charge from 4 days ago. Please refund it.",
@@ -36,6 +39,7 @@ export default function App() {
   const [messages, setMessages] = useState<Msg[]>([]);
   const [busy, setBusy] = useState(false);
   const [demoRunning, setDemoRunning] = useState(false);
+  const [role, setRoleState] = useState<Role>(() => (lsGet(ROLE_KEY) === "merchant" ? "merchant" : "customer"));
   const [tab, setTab] = useState<Tab>("account");
   const [mobile, setMobile] = useState<"chat" | "activity">("chat");
   const [tick, setTick] = useState(0);
@@ -45,10 +49,15 @@ export default function App() {
   const [activeId, setActiveId] = useState<string | null>(null);
   const activeRef = useRef<string | null>(null);
 
+  const setRole = useCallback((r: Role) => {
+    setRoleState(r);
+    lsSet(ROLE_KEY, r);
+  }, []);
+
   const setActive = useCallback((id: string | null) => {
     activeRef.current = id;
     setActiveId(id);
-    lsSet(id);
+    lsSet(LS_KEY, id);
   }, []);
 
   const loadConversations = useCallback(async () => {
@@ -79,7 +88,7 @@ export default function App() {
   // On load: restore the conversation you were in, so a refresh or a return an hour later picks up where you left off.
   useEffect(() => {
     loadConversations().then((list) => {
-      const saved = lsGet();
+      const saved = lsGet(LS_KEY);
       const target = list.find((c) => c.id === saved) ?? list[0];
       if (target) openConversation(target.id);
     });
@@ -96,7 +105,9 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    api<Health>("/api/health").then(setHealth).catch((e) => setLoadErr(e.message));
+    api<Health>("/api/health")
+      .then(setHealth)
+      .catch((e) => setLoadErr(e.message));
     refresh();
     const id = setInterval(refresh, 5000);
     return () => clearInterval(id);
@@ -113,7 +124,7 @@ export default function App() {
         });
         setActive(out.conversationId);
         setMessages((m) => [...m, { role: "agent", text: out.reply, events: out.events, model: out.model }]);
-        if (out.events.some((e) => e.type === "tool_result" && e.result.status === "pending_approval")) setTab("approvals");
+        if (out.events.some((e) => e.type === "tool_result" && e.result.status === "pending_approval")) setTab("requests");
       } catch (e: any) {
         setMessages((m) => [...m, { role: "agent", text: e.message || "Something went wrong. Please try again.", error: true }]);
       } finally {
@@ -137,6 +148,7 @@ export default function App() {
 
   const runDemo = useCallback(async () => {
     cancelled.current = false;
+    setRole("customer");
     setDemoRunning(true);
     await api("/api/reset", { method: "POST" }).catch(() => {});
     setActive(null);
@@ -150,14 +162,12 @@ export default function App() {
       await send(step);
     }
     setDemoRunning(false);
-  }, [refresh, send, setActive]);
+  }, [refresh, send, setActive, setRole]);
 
   const pending = state?.approvals.filter((a) => a.status === "PENDING").length ?? 0;
   const tabs: { id: Tab; label: string; badge?: number }[] = [
-    { id: "account", label: "Account" },
-    { id: "approvals", label: "Approvals", badge: pending },
-    { id: "audit", label: "Audit log" },
-    { id: "policy", label: "Policy" },
+    { id: "account", label: "My account" },
+    { id: "requests", label: "My requests", badge: pending },
   ];
 
   return (
@@ -171,47 +181,82 @@ export default function App() {
               <p className="hidden text-xs text-muted sm:block">AI billing help for PayPal merchants</p>
             </div>
           </div>
-          <div className="order-3 flex w-full flex-wrap items-center gap-1.5 sm:order-none sm:w-auto">
-            {health && (
-              <>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 sm:px-2.5 sm:py-1 sm:text-xs ${
-                    health.demoAI ? "bg-amber-50 text-amber-800 ring-amber-200" : "bg-emerald-50 text-emerald-700 ring-emerald-200"
-                  }`}
-                  title={health.model}
-                >
-                  {health.demoAI ? "DEMO MODE: scripted AI" : "Live AI"}
-                </span>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 sm:px-2.5 sm:py-1 sm:text-xs ${
-                    health.paypalSandboxConfigured ? "bg-blue-50 text-accent-dark ring-blue-200" : "bg-amber-50 text-amber-800 ring-amber-200"
-                  }`}
-                >
-                  {health.paypalSandboxConfigured ? "PayPal Sandbox" : "DEMO MODE: no PayPal keys"}
-                </span>
-              </>
-            )}
+
+          <div
+            role="tablist"
+            aria-label="View as"
+            className="ml-auto flex rounded-xl bg-slate-100 p-0.5 lg:order-3"
+          >
+            {(["customer", "merchant"] as const).map((r) => (
+              <button
+                key={r}
+                role="tab"
+                aria-selected={role === r}
+                onClick={() => setRole(r)}
+                className={`min-h-9 rounded-[10px] px-3.5 text-sm font-medium transition ${
+                  role === r ? "bg-white text-ink shadow-sm" : "text-muted hover:text-ink"
+                }`}
+              >
+                {r === "customer" ? "Customer" : "Merchant"}
+                {r === "merchant" && pending > 0 && (
+                  <span className="ml-1.5 rounded-full bg-amber-400 px-1.5 text-xs font-bold text-ink">{pending}</span>
+                )}
+              </button>
+            ))}
           </div>
-          <div className="ml-auto flex items-center gap-2">
-            <button
-              onClick={reset}
-              disabled={demoRunning && busy}
-              className="rounded-lg border border-line bg-white px-3 py-2 text-sm font-medium hover:border-slate-400 disabled:opacity-50"
-            >
-              Reset
-            </button>
-            <button
-              onClick={runDemo}
-              disabled={demoRunning || busy}
-              className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-dark disabled:opacity-50"
-            >
-              {demoRunning ? "Running..." : (
+
+          <div className="order-3 flex w-full items-center justify-between gap-2 lg:contents">
+            <div className="flex flex-wrap items-center gap-1.5 lg:order-2">
+              {health && (
                 <>
-                  <span className="sm:hidden">Run demo</span>
-                  <span className="hidden sm:inline">Try demo scenario</span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 sm:px-2.5 sm:py-1 sm:text-xs ${
+                      health.demoAI ? "bg-amber-50 text-amber-800 ring-amber-200" : "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                    }`}
+                    title={health.model}
+                  >
+                    {health.demoAI ? "DEMO MODE: scripted AI" : "Live AI"}
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 sm:px-2.5 sm:py-1 sm:text-xs ${
+                      health.paypalSandboxConfigured ? "bg-blue-50 text-accent-dark ring-blue-200" : "bg-amber-50 text-amber-800 ring-amber-200"
+                    }`}
+                  >
+                    {health.paypalSandboxConfigured ? (
+                      <>
+                        <span className="sm:hidden">Sandbox</span>
+                        <span className="hidden sm:inline">PayPal Sandbox</span>
+                      </>
+                    ) : (
+                      "DEMO MODE: no PayPal keys"
+                    )}
+                  </span>
                 </>
               )}
-            </button>
+            </div>
+            <div className="flex items-center gap-2 lg:order-4">
+              <button
+                onClick={reset}
+                disabled={demoRunning && busy}
+                className="min-h-9 rounded-lg border border-line bg-white px-3 text-sm font-medium hover:border-slate-400 disabled:opacity-50"
+              >
+                Reset
+              </button>
+              <button
+                onClick={runDemo}
+                disabled={demoRunning || busy}
+                className="min-h-9 rounded-lg bg-accent px-4 text-sm font-semibold text-white hover:bg-accent-dark disabled:opacity-50"
+              >
+                {demoRunning ? (
+                  "Running..."
+                ) : (
+                  <>
+                    <span className="sm:hidden">Run demo</span>
+                    <span className="hidden sm:inline">Try demo scenario</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -222,78 +267,88 @@ export default function App() {
         </p>
       )}
 
-      <div className="border-b border-line bg-white lg:hidden">
-        <div className="mx-auto grid max-w-md grid-cols-2 p-1.5" role="tablist">
-          {(["chat", "activity"] as const).map((v) => (
-            <button
-              key={v}
-              role="tab"
-              aria-selected={mobile === v}
-              onClick={() => setMobile(v)}
-              className={`rounded-lg py-2 text-sm font-medium ${mobile === v ? "bg-accent text-white" : "text-muted"}`}
-            >
-              {v === "chat" ? "Chat" : `Activity${pending ? ` (${pending})` : ""}`}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <main className="mx-auto grid min-h-0 w-full max-w-7xl flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] gap-4 p-2.5 sm:p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,460px)]">
-        <div className={`min-h-0 min-w-0 ${mobile === "chat" ? "block" : "hidden"} lg:block`}>
-          <Chat
-            messages={messages}
-            busy={busy}
-            disabled={!health}
-            onSend={send}
-            conversations={conversations}
-            activeId={activeId}
-            onSelect={openConversation}
-            onNew={newChat}
-            pendingCount={pending}
-            onReview={() => {
-              setTab("approvals");
-              setMobile("activity");
-            }}
-          />
-        </div>
-        <aside
-          className={`min-h-0 min-w-0 flex-col rounded-2xl border border-line bg-white shadow-sm ${mobile === "activity" ? "flex" : "hidden"} lg:flex`}
-          aria-label="Activity"
-        >
-          <nav className="flex gap-1 border-b border-line p-1.5" role="tablist">
-            {tabs.map((t) => (
-              <button
-                key={t.id}
-                role="tab"
-                aria-selected={tab === t.id}
-                onClick={() => setTab(t.id)}
-                className={`flex-1 rounded-lg px-2 py-2 text-sm font-medium transition ${
-                  tab === t.id ? "bg-blue-50 text-accent-dark" : "text-muted hover:text-ink"
-                }`}
-              >
-                {t.label}
-                {!!t.badge && <span className="ml-1.5 rounded-full bg-amber-400 px-1.5 text-xs font-bold text-ink">{t.badge}</span>}
-              </button>
-            ))}
-          </nav>
-          <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {!state ? (
-              <p className="py-10 text-center text-sm text-muted">Loading...</p>
-            ) : tab === "account" ? (
-              <AccountPanel state={state} />
-            ) : tab === "approvals" ? (
-              <ApprovalsPanel approvals={state.approvals} onDecided={refresh} />
-            ) : tab === "audit" ? (
-              <AuditPanel refreshKey={tick} />
+      {role === "merchant" ? (
+        <main className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto w-full max-w-5xl p-3 sm:p-4">
+            {state ? (
+              <MerchantView state={state} tick={tick} onChanged={refresh} />
             ) : (
-              <PolicyPanel policy={state.policy} onSaved={refresh} />
+              <p className="py-10 text-center text-sm text-muted">Loading...</p>
             )}
           </div>
-          <p className="border-t border-line px-4 py-2 text-xs text-muted">
-            Customer view of seeded demo data for Acme Digital. Rows marked "Live PayPal sandbox" call PayPal's real sandbox API.
-          </p>
-        </aside>
-      </main>
+        </main>
+      ) : (
+        <>
+          <div className="border-b border-line bg-white lg:hidden">
+            <div className="mx-auto grid max-w-md grid-cols-2 p-1.5" role="tablist">
+              {(["chat", "activity"] as const).map((v) => (
+                <button
+                  key={v}
+                  role="tab"
+                  aria-selected={mobile === v}
+                  onClick={() => setMobile(v)}
+                  className={`rounded-lg py-2 text-sm font-medium ${mobile === v ? "bg-accent text-white" : "text-muted"}`}
+                >
+                  {v === "chat" ? "Chat" : `My account${pending ? ` (${pending})` : ""}`}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <main className="mx-auto grid min-h-0 w-full max-w-7xl flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] gap-4 p-2.5 sm:p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,460px)]">
+            <div className={`min-h-0 min-w-0 ${mobile === "chat" ? "block" : "hidden"} lg:block`}>
+              <Chat
+                messages={messages}
+                busy={busy}
+                disabled={!health}
+                onSend={send}
+                conversations={conversations}
+                activeId={activeId}
+                onSelect={openConversation}
+                onNew={newChat}
+                pendingCount={pending}
+                onReview={() => {
+                  setTab("requests");
+                  setMobile("activity");
+                }}
+              />
+            </div>
+            <aside
+              className={`min-h-0 min-w-0 flex-col rounded-2xl border border-line bg-white shadow-sm ${mobile === "activity" ? "flex" : "hidden"} lg:flex`}
+              aria-label="My account"
+            >
+              <nav className="flex gap-1 border-b border-line p-1.5" role="tablist">
+                {tabs.map((t) => (
+                  <button
+                    key={t.id}
+                    role="tab"
+                    aria-selected={tab === t.id}
+                    onClick={() => setTab(t.id)}
+                    className={`min-h-11 flex-1 rounded-lg px-2 text-sm font-medium transition ${
+                      tab === t.id ? "bg-blue-50 text-accent-dark" : "text-muted hover:text-ink"
+                    }`}
+                  >
+                    {t.label}
+                    {!!t.badge && <span className="ml-1.5 rounded-full bg-amber-400 px-1.5 text-xs font-bold text-ink">{t.badge}</span>}
+                  </button>
+                ))}
+              </nav>
+              <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                {!state ? (
+                  <p className="py-10 text-center text-sm text-muted">Loading...</p>
+                ) : tab === "account" ? (
+                  <AccountPanel state={state} />
+                ) : (
+                  <RequestsPanel approvals={state.approvals} />
+                )}
+              </div>
+              <p className="border-t border-line px-4 py-2 text-xs text-muted">
+                Customer view of seeded demo data for Acme Digital. Rows marked "Live PayPal sandbox" call PayPal's real sandbox API.
+              </p>
+            </aside>
+          </main>
+        </>
+      )}
     </div>
   );
 }

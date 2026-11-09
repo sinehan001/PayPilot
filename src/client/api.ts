@@ -58,6 +58,13 @@ export interface AuditResp {
   rows: AuditRow[];
   chain: { ok: boolean; count: number; brokenAt?: number };
 }
+export interface MerchantSummary {
+  pending: number;
+  refundedToday: number;
+  handledByAI: number;
+  blockedByPolicy: number;
+  conversations: number;
+}
 export interface ConversationSummary {
   id: string;
   title: string;
