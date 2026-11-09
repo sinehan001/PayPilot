@@ -163,19 +163,19 @@ export default function App() {
   return (
     <div className="flex h-full flex-col">
       <header className="border-b border-line bg-white">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-4 gap-y-1.5 px-3 py-2 sm:px-4 sm:py-3">
           <div className="flex items-center gap-2.5">
             <div className="grid h-9 w-9 place-items-center rounded-xl bg-accent text-lg font-bold text-white">P</div>
             <div className="leading-tight">
               <h1 className="text-base font-semibold">PayPilot</h1>
-              <p className="text-xs text-muted">AI billing help for PayPal merchants</p>
+              <p className="hidden text-xs text-muted sm:block">AI billing help for PayPal merchants</p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-1.5">
+          <div className="order-3 flex w-full flex-wrap items-center gap-1.5 sm:order-none sm:w-auto">
             {health && (
               <>
                 <span
-                  className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 sm:px-2.5 sm:py-1 sm:text-xs ${
                     health.demoAI ? "bg-amber-50 text-amber-800 ring-amber-200" : "bg-emerald-50 text-emerald-700 ring-emerald-200"
                   }`}
                   title={health.model}
@@ -183,7 +183,7 @@ export default function App() {
                   {health.demoAI ? "DEMO MODE: scripted AI" : "Live AI"}
                 </span>
                 <span
-                  className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${
+                  className={`rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 sm:px-2.5 sm:py-1 sm:text-xs ${
                     health.paypalSandboxConfigured ? "bg-blue-50 text-accent-dark ring-blue-200" : "bg-amber-50 text-amber-800 ring-amber-200"
                   }`}
                 >
@@ -205,7 +205,12 @@ export default function App() {
               disabled={demoRunning || busy}
               className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-dark disabled:opacity-50"
             >
-              {demoRunning ? "Running demo..." : "Try demo scenario"}
+              {demoRunning ? "Running..." : (
+                <>
+                  <span className="sm:hidden">Run demo</span>
+                  <span className="hidden sm:inline">Try demo scenario</span>
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -233,8 +238,8 @@ export default function App() {
         </div>
       </div>
 
-      <main className="mx-auto grid min-h-0 w-full max-w-7xl flex-1 gap-4 p-3 sm:p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,460px)]">
-        <div className={`min-h-0 ${mobile === "chat" ? "block" : "hidden"} lg:block`}>
+      <main className="mx-auto grid min-h-0 w-full max-w-7xl flex-1 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)] gap-4 p-2.5 sm:p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,460px)]">
+        <div className={`min-h-0 min-w-0 ${mobile === "chat" ? "block" : "hidden"} lg:block`}>
           <Chat
             messages={messages}
             busy={busy}
@@ -244,10 +249,15 @@ export default function App() {
             activeId={activeId}
             onSelect={openConversation}
             onNew={newChat}
+            pendingCount={pending}
+            onReview={() => {
+              setTab("approvals");
+              setMobile("activity");
+            }}
           />
         </div>
         <aside
-          className={`min-h-0 flex-col rounded-2xl border border-line bg-white shadow-sm ${mobile === "activity" ? "flex" : "hidden"} lg:flex`}
+          className={`min-h-0 min-w-0 flex-col rounded-2xl border border-line bg-white shadow-sm ${mobile === "activity" ? "flex" : "hidden"} lg:flex`}
           aria-label="Activity"
         >
           <nav className="flex gap-1 border-b border-line p-1.5" role="tablist">

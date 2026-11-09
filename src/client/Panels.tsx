@@ -127,14 +127,14 @@ export function ApprovalsPanel({ approvals, onDecided }: { approvals: Approval[]
             <button
               onClick={() => decide(a.id, "approve")}
               disabled={busy === a.id}
-              className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-dark disabled:opacity-50"
+              className="min-h-11 rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-white hover:bg-accent-dark disabled:opacity-50"
             >
               {busy === a.id ? "Working..." : "Approve"}
             </button>
             <button
               onClick={() => decide(a.id, "reject")}
               disabled={busy === a.id}
-              className="rounded-lg border border-line bg-white px-4 py-2 text-sm font-semibold text-ink hover:border-slate-400 disabled:opacity-50"
+              className="min-h-11 rounded-lg border border-line bg-white px-5 py-2 text-sm font-semibold text-ink hover:border-slate-400 disabled:opacity-50"
             >
               Reject
             </button>
@@ -230,7 +230,7 @@ export function PolicyPanel({ policy, onSaved }: { policy: Policy; onSaved: () =
           min={0}
           value={p[key] as number}
           onChange={(e) => setP({ ...p, [key]: Number(e.target.value) })}
-          className={`w-full rounded-lg border border-line bg-white py-2 pr-3 text-sm ${prefix ? "pl-7" : "pl-3"}`}
+          className={`w-full rounded-lg border border-line bg-white py-2.5 pr-3 text-base sm:text-sm ${prefix ? "pl-7" : "pl-3"}`}
         />
       </div>
     </label>
@@ -269,7 +269,7 @@ export function PolicyPanel({ policy, onSaved }: { policy: Policy; onSaved: () =
         />
       </label>
       <div className="flex items-center gap-3">
-        <button onClick={save} className="rounded-lg bg-accent px-4 py-2 text-sm font-semibold text-white hover:bg-accent-dark">
+        <button onClick={save} className="min-h-11 rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-white hover:bg-accent-dark">
           Save policy
         </button>
         {msg && <span className="text-sm text-muted">{msg}</span>}

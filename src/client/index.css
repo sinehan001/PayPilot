@@ -10,8 +10,10 @@
   --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
-html, body, #root { height: 100%; }
-body { margin: 0; background: var(--color-surface); color: var(--color-ink); font-family: var(--font-sans); }
+html, body { height: 100%; }
+/* dvh = the visible height on phones, so the input never hides behind the browser's address bar. */
+#root { height: 100%; height: 100dvh; }
+body { margin: 0; overflow-x: hidden; background: var(--color-surface); color: var(--color-ink); font-family: var(--font-sans); -webkit-text-size-adjust: 100%; }
 
 @keyframes dot { 0%, 80%, 100% { opacity: .25 } 40% { opacity: 1 } }
 .dot { animation: dot 1.2s infinite both; }
@@ -19,3 +21,6 @@ body { margin: 0; background: var(--color-surface); color: var(--color-ink); fon
 .dot:nth-child(3) { animation-delay: .3s; }
 
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }

@@ -90,6 +90,8 @@ export default function Chat({
   activeId,
   onSelect,
   onNew,
+  pendingCount,
+  onReview,
 }: {
   messages: Msg[];
   busy: boolean;
@@ -99,6 +101,8 @@ export default function Chat({
   activeId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
+  pendingCount: number;
+  onReview: () => void;
 }) {
   const [text, setText] = useState("");
   const [open, setOpen] = useState(false);
@@ -133,12 +137,12 @@ export default function Chat({
   };
 
   return (
-    <section className="flex h-full min-h-0 flex-col rounded-2xl border border-line bg-white shadow-sm" aria-label="Chat">
+    <section className="flex h-full min-h-0 min-w-0 flex-col rounded-2xl border border-line bg-white shadow-sm" aria-label="Chat">
       <div className="relative flex items-center justify-between gap-2 border-b border-line px-3 py-2">
         <button
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
-          className="shrink-0 rounded-lg border border-line bg-white px-3 py-1.5 text-sm font-medium hover:border-slate-400"
+          className="shrink-0 rounded-lg border border-line bg-white px-3 py-2 text-sm font-medium hover:border-slate-400"
         >
           History ({conversations.length}) {open ? "▴" : "▾"}
         </button>
@@ -149,7 +153,7 @@ export default function Chat({
             onNew();
           }}
           disabled={busy}
-          className="shrink-0 rounded-lg bg-blue-50 px-3 py-1.5 text-sm font-semibold text-accent-dark hover:bg-blue-100 disabled:opacity-50"
+          className="shrink-0 rounded-lg bg-blue-50 px-3 py-2 text-sm font-semibold text-accent-dark hover:bg-blue-100 disabled:opacity-50"
         >
           + New chat
         </button>
@@ -233,15 +237,27 @@ export default function Chat({
           <div ref={end} />
         </div>
       </div>
+      {pendingCount > 0 && (
+        <button
+          type="button"
+          onClick={onReview}
+          className="mx-3 mt-2 flex min-h-11 items-center justify-between gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-left text-sm font-medium text-amber-900 lg:hidden"
+        >
+          <span>
+            {pendingCount} request{pendingCount === 1 ? "" : "s"} waiting for approval
+          </span>
+          <span className="shrink-0 font-semibold text-accent-dark">Review</span>
+        </button>
+      )}
       {messages.length > 0 && (
-        <div className="flex gap-2 overflow-x-auto border-t border-line px-3 pt-2.5" aria-label="Suggested questions">
+        <div className="no-scrollbar flex gap-2 overflow-x-auto border-t border-line px-3 pt-2.5" aria-label="Suggested questions">
           {followUps.map((s) => (
             <button
               key={s.label}
               type="button"
               onClick={() => fill(s.text)}
               disabled={busy || disabled}
-              className="shrink-0 rounded-full border border-line bg-white px-3 py-1.5 text-xs text-ink transition hover:border-accent hover:text-accent disabled:opacity-50"
+              className="shrink-0 rounded-full border border-line bg-white px-3.5 py-2 text-[13px] text-ink sm:py-1.5 sm:text-xs transition hover:border-accent hover:text-accent disabled:opacity-50"
             >
               {s.label}
             </button>
@@ -249,7 +265,7 @@ export default function Chat({
         </div>
       )}
       <form
-        className={`flex gap-2 p-3 ${messages.length > 0 ? "" : "border-t border-line"}`}
+        className={`flex gap-2 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] ${messages.length > 0 ? "" : "border-t border-line"}`}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
@@ -262,12 +278,12 @@ export default function Chat({
           placeholder="Ask about a charge, a refund, or a cancellation"
           aria-label="Message"
           maxLength={1000}
-          className="min-w-0 flex-1 rounded-xl border border-line bg-white px-4 py-2.5 text-[15px] placeholder:text-slate-400"
+          className="min-w-0 flex-1 rounded-xl border border-line bg-white px-4 py-2.5 text-base placeholder:text-slate-400 sm:text-[15px]"
         />
         <button
           type="submit"
           disabled={!text.trim() || busy || disabled}
-          className="rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-dark disabled:opacity-40"
+          className="min-h-11 rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-accent-dark disabled:opacity-40"
         >
           Send
         </button>
