@@ -1,6 +1,6 @@
 # PayPilot: AI billing help you can trust with money
 
-*Paste the sections below into the Devpost form. Replace `<repo-url>` and `<video-url>`.*
+*Paste the sections below into the Devpost form. Replace `<video-url>` once the video is uploaded.*
 
 ---
 
@@ -18,7 +18,7 @@
 
 **Design, impact, limits.** Customer and merchant views, resumable saved chats, suggested questions built from the live account, and a phone-friendly layout. It is aimed at small merchants who cannot staff a support desk but cannot afford a careless AI. It is a prototype: seeded demo data, one customer, no login, and only rows marked "Live PayPal sandbox" touch PayPal. It runs with no keys, so judges can try everything.
 
-**Try it:** `git clone <repo-url>`, `npm install`, `npm run build`, `npm start`, then press "Try demo scenario".
+**Try it:** `git clone https://github.com/sinehan001/PayPilot.git`, `npm install`, `npm run build`, `npm start`, then press "Try demo scenario".
 
 ---
 
@@ -35,6 +35,6 @@ TypeScript, Node.js, Express, React, Vite, Tailwind CSS, SQLite (better-sqlite3)
 
 ## Links
 
-- Code: `<repo-url>` (MIT licensed)
+- Code: https://github.com/sinehan001/PayPilot (MIT licensed)
 - Demo video: `<video-url>`
 - How to run without any keys: see the README

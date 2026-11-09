@@ -18,8 +18,8 @@ Customers ask it about charges, cancellations and refunds in plain English. It d
 ## Try it in about a minute (no keys needed)
 
 ```bash
-git clone <repo-url> paypilot
-cd paypilot
+git clone https://github.com/sinehan001/PayPilot.git
+cd PayPilot
 npm install
 npm run build
 npm start
