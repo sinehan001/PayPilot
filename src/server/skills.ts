@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { db } from "./db.ts";
 import type { Content } from "./llm.ts";
+import { getPolicy } from "./policy.ts";
 import * as store from "./store.ts";
+import { MERCHANT } from "./store.ts";
 
 /**
  * Skills: named capabilities the AI is given. Each skill has a playbook (what to do),
@@ -44,7 +46,10 @@ export interface Skill {
   name: string;
   description: string;
   whenToUse: string;
-  kind: "read" | "write";
+  /** "conduct" skills have no tools: they set how the AI behaves with people. */
+  kind: "read" | "write" | "conduct";
+  /** Locked skills are always on and cannot be switched off by the merchant. */
+  locked?: boolean;
   tools: string[];
   playbook: string[];
   checks: SkillCheck[];
@@ -76,6 +81,26 @@ const reasonOk = (a: any) => ({ ok: typeof a.reason === "string" && a.reason.tri
 // --- the skills ---------------------------------------------------------------------------
 
 export const skills: Skill[] = [
+  {
+    id: "conduct",
+    name: "Stay calm and in scope",
+    description: "How the AI treats every customer: patient and kind, honest about what it can and cannot do, and always within billing.",
+    whenToUse: "Every message, especially when the customer is upset, rude, confused or asks for something outside billing.",
+    kind: "conduct",
+    locked: true,
+    tools: ["list_my_skills"],
+    playbook: [
+      "Stay calm and kind even if the customer is angry, rude or scolding. Never argue, never insult, never be sarcastic, never lecture.",
+      "Acknowledge the feeling in one short sentence (for example: I understand this is frustrating), then move straight to fixing the problem.",
+      "Be honest and specific about what you can do. If the customer asks what you can do, or asks for something you cannot do, call list_my_skills and explain from its answer. Never invent abilities.",
+      "Never promise a refund or any result. Explain that the merchant's policy and a person decide, and say what happens next.",
+      "You only help with Acme Digital billing. For anything else, say so kindly and list what you can help with.",
+      "If the customer stays upset or needs something you cannot do, offer to have a person at Acme Digital follow up, and stop there.",
+    ],
+    checks: [],
+    requiresConfirmation: false,
+    escalation: "Offer a person at Acme Digital. Never match the customer's tone.",
+  },
   {
     id: "explain_charges",
     name: "Explain a charge",
@@ -208,7 +233,7 @@ function enabledMap(): Record<string, boolean> {
   const r = db.prepare("select value from settings where key='skills_enabled'").get() as { value: string } | undefined;
   return r ? JSON.parse(r.value) : {};
 }
-export const isSkillEnabled = (id: string) => enabledMap()[id] !== false;
+export const isSkillEnabled = (id: string) => skills.find((s) => s.id === id)?.locked === true || enabledMap()[id] !== false;
 export function setSkillEnabled(id: string, enabled: boolean) {
   const m = { ...enabledMap(), [id]: enabled };
   db.prepare("insert into settings(key,value) values('skills_enabled',?) on conflict(key) do update set value=excluded.value").run(JSON.stringify(m));
@@ -223,15 +248,42 @@ export function describeSkills() {
     description: s.description,
     whenToUse: s.whenToUse,
     kind: s.kind,
+    locked: Boolean(s.locked),
     tools: s.tools,
     enabled: isSkillEnabled(s.id),
-    conditions: [
+    conditions: s.kind === "conduct" ? s.playbook : [
       ...s.checks.map((c) => c.label),
       ...(s.requiresConfirmation ? ["The customer explicitly says yes in a separate message"] : []),
       ...(s.kind === "write" ? ["Your policy decides: do it, send it to a person, or decline"] : []),
     ],
     escalation: s.escalation,
   }));
+}
+
+/**
+ * What the AI may tell a customer about itself. Built from the skills that are switched on right now,
+ * so the answer is always accurate and never invented.
+ */
+export function customerSkillSummary() {
+  const policy = getPolicy();
+  const needs: Record<string, string> = {
+    explain_charges: "Nothing special. Just ask about a charge, ideally with the amount or date.",
+    track_requests: "The reference number from my earlier message (it looks like AP-1a2b3c4d).",
+    cancel_subscription: "Which subscription, a reason, and your yes to confirm. I can cancel it right away once you confirm.",
+    refund_charge: `Which charge, why you want it back, and your yes to confirm. Refunds up to $${policy.autoRefundLimit.toFixed(0)} within ${policy.refundWindowDays} days can be quick; anything larger goes to a person at ${MERCHANT} who decides and tells you why.`,
+  };
+  return {
+    i_can_help_with: enabledSkills()
+      .filter((s) => s.kind !== "conduct")
+      .map((s) => ({ what: s.name, description: s.description, what_i_need_from_you: needs[s.id] ?? "Just ask." })),
+    i_cannot: [
+      "Change your plan, price or payment method",
+      "Promise a refund: the merchant's policy and a person decide, and you will be told the reason",
+      "See or change anyone else's account",
+      `Help with anything outside ${MERCHANT} billing`,
+    ],
+    if_you_need_more: `I can pass this to a person at ${MERCHANT}.`,
+  };
 }
 
 // --- the gate every write goes through -----------------------------------------------------

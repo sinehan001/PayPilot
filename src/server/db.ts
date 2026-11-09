@@ -34,6 +34,12 @@ create table if not exists proposals(
   args text not null, turn integer not null, status text not null, created_at text not null);
 `);
 
+// Migration: every approval remembers which conversation it came from and why the merchant decided as they did.
+for (const col of ["decision_reason", "conversation_id"]) {
+  const cols = db.prepare("pragma table_info(approvals)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === col)) db.exec(`alter table approvals add column ${col} text`);
+}
+
 // Migration: demo rows can be linked to real PayPal sandbox objects.
 for (const t of ["subscriptions", "charges"]) {
   const cols = db.prepare(`pragma table_info(${t})`).all() as { name: string }[];

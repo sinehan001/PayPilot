@@ -2,7 +2,9 @@ import { logAudit } from "./audit.ts";
 import { addMessage, getConversation, loadHistory, saveHistory } from "./conversations.ts";
 import { selectLLM, type Content, type LLM, type Part } from "./llm.ts";
 import { MERCHANT } from "./store.ts";
+import { falseActionClaim, truthfulReply } from "./reply-check.ts";
 import { enabledSkills } from "./skills.ts";
+import { CALM_NOTE, detectTone } from "./tone.ts";
 import { activeTools, callTool, type ToolResult } from "./tools.ts";
 
 export type AgentEvent =
@@ -21,7 +23,7 @@ function skillsSection(): string[] {
   for (const s of list) {
     out.push(`SKILL "${s.name}": ${s.description}`, `  Use when: ${s.whenToUse}`);
     s.playbook.forEach((step, i) => out.push(`  ${i + 1}. ${step}`));
-    out.push(`  If a condition fails: ${s.escalation}`);
+    out.push(`  ${s.kind === "conduct" ? "If it gets difficult" : "If a condition fails"}: ${s.escalation}`);
   }
   out.push("You have no other abilities. If a request fits no skill, say so and offer to have a person help.");
   return out;
@@ -41,6 +43,8 @@ function systemPrompt(customer: string): string {
     "- If a result is pending approval, tell the customer a human will review it and give the reference.",
     "- Use list_charges to find charges before acting. Only refund or cancel when the customer clearly asks.",
     "- If the customer asks about an earlier request, use check_request_status with its reference before answering.",
+    "- When you report that a request was approved or declined, always include the reason Acme Digital recorded, in plain words and kindly.",
+    "- Only say you did something if a tool result confirms it. Never say you refunded or cancelled anything unless the result status was ok.",
     "- If a system note says the customer is returning after a break, re-check with tools before stating current status.",
     "- Never do bulk actions. If asked to refund or cancel everything or all items, do NOT call any action tool: explain you can only handle one item at a time and ask which one.",
     "- Make at most one account change per customer message.",
@@ -71,6 +75,11 @@ export async function runAgent(
     parts.push({
       text: `[System note: the customer is returning after ${humanGap(gap)}. Anything said earlier about account state, pending requests or amounts may be out of date. Re-check with tools before stating current status or acting.]`,
     });
+  }
+  // An upset customer gets the same checks as anyone else, but the AI is reminded to stay patient and kind.
+  if (detectTone(opts.message) === "upset") {
+    parts.push({ text: CALM_NOTE });
+    logAudit("system", "tone_flag", "Customer sounded upset: AI reminded to stay calm and kind", { conversationId: conv.id });
   }
   parts.push({ text: opts.message });
   history.push({ role: "user", parts });
@@ -118,6 +127,14 @@ export async function runAgent(
     history.push({ role: "user", parts: responses });
   }
   if (!reply) reply = "I'm having trouble finishing that. A human will follow up.";
+
+  // Words must match deeds: never let a reply claim a change that did not happen.
+  if (falseActionClaim(reply, events)) {
+    logAudit("system", "reply_corrected", "The AI claimed an account change that did not happen: reply replaced with the facts", {
+      original: reply.slice(0, 300),
+    });
+    reply = truthfulReply(events);
+  }
 
   saveHistory(conv.id, history);
   addMessage(conv.id, { role: "agent", text: reply, events, model: llm.name });

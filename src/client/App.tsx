@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Chat, { type Msg } from "./Chat";
 import MerchantView from "./MerchantView";
 import { AccountPanel, RequestsPanel } from "./Panels";
-import { api, type AgentEvent, type ConversationSummary, type Health, type State, type StoredMessage } from "./api";
+import { api, type AgentEvent, type ConversationSummary, type Health, type SkillInfo, type State, type StoredMessage } from "./api";
 
 const LS_KEY = "paypilot.conversation";
 const ROLE_KEY = "paypilot.role";
@@ -96,11 +96,30 @@ export default function App() {
     });
   }, [loadConversations, openConversation]);
 
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const busyRef = useRef(false);
+  const lenRef = useRef(0);
+  useEffect(() => {
+    busyRef.current = busy;
+  }, [busy]);
+  useEffect(() => {
+    lenRef.current = messages.length;
+  }, [messages]);
+
   const refresh = useCallback(async () => {
     try {
       setState(await api<State>("/api/state"));
       setTick((t) => t + 1);
       setLoadErr(null);
+      api<SkillInfo[]>("/api/skills")
+        .then(setSkills)
+        .catch(() => {});
+      // A decision from the merchant lands in the customer's conversation: pull it in without a refresh.
+      const id = activeRef.current;
+      if (id && !busyRef.current) {
+        const r = await api<{ messages: StoredMessage[] }>(`/api/conversations/${id}`).catch(() => null);
+        if (r && r.messages.length !== lenRef.current && !busyRef.current) setMessages(r.messages.map(toMsg));
+      }
     } catch (e: any) {
       setLoadErr(e.message);
     }
@@ -309,6 +328,7 @@ export default function App() {
                 onSelect={openConversation}
                 onNew={newChat}
                 pendingCount={pending}
+                skills={skills}
                 onReview={() => {
                   setTab("requests");
                   setMobile("activity");

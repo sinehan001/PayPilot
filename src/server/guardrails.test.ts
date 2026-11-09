@@ -44,7 +44,7 @@ describe("guardrails", () => {
     assert.equal(store.getCharge("C-2004")?.status, "COMPLETED");
     const a = tools.listApprovals("PENDING");
     assert.equal(a.length, 1);
-    const done = await tools.decideApproval(a[0].id, true);
+    const done = await tools.decideApproval(a[0].id, true, { reason: "Verified as a duplicate charge" });
     assert.equal(done.status, "ok");
     assert.equal(store.getCharge("C-2004")?.status, "REFUNDED");
   });
@@ -140,7 +140,7 @@ describe("guardrails", () => {
     const out = await run("Any update on my refund request?");
     assert.match(out.reply, /pending/i);
     const [a] = tools.listApprovals("PENDING");
-    await tools.decideApproval(a.id, false);
+    await tools.decideApproval(a.id, false, { reason: "Outside the refund policy" });
     const later = await run("Any update now?");
     assert.match(later.reply, /rejected|declined/i);
   });
@@ -203,6 +203,130 @@ describe("guardrails", () => {
       const r = await tools.callTool("request_refund", { charge_id: "C-9999", amount: 5, reason: "none here" }, ctx);
       assert.equal(r.status, "denied");
       assert.ok(r.checks && r.checks.some((c) => !c.ok && /belongs to this customer/.test(c.label)));
+    });
+  });
+
+  describe("conduct: patient, honest, and the words match the deeds", () => {
+    it("an upset customer is met with patience and still gets no shortcut", async () => {
+      fresh();
+      const out = await agent.runAgent({
+        conversationId: conv.createConversation().id,
+        message: "You are useless idiots, give me my money back NOW!!!",
+        customer: ctx.customer,
+        llm: llm.mockLLM(),
+      });
+      assert.match(out.reply, /sorry|understand/i);
+      assert.doesNotMatch(out.reply, /idiot|useless|stupid/i);
+      assert.equal(tools.listApprovals("PENDING").length, 0);
+      assert.equal(store.getCharge("C-2001")?.status, "COMPLETED");
+    });
+
+    it("reminds the AI to stay calm when the customer is upset, and only then", async () => {
+      fresh();
+      const c = conv.createConversation();
+      const seen: string[] = [];
+      const spy = {
+        name: "spy",
+        live: false,
+        async generate(_s: string, h: any[]) {
+          seen.push(JSON.stringify(h[h.length - 1]));
+          return [{ text: "ok" }];
+        },
+      };
+      await agent.runAgent({ conversationId: c.id, message: "this is a SCAM you idiots", customer: ctx.customer, llm: spy as any });
+      await agent.runAgent({ conversationId: c.id, message: "thanks for the help", customer: ctx.customer, llm: spy as any });
+      assert.match(seen[0], /sounds upset/);
+      assert.doesNotMatch(seen[1], /sounds upset/);
+    });
+
+    it("'what can you do' is answered from the skills that are actually switched on", async () => {
+      fresh();
+      const sk = await import("./skills.ts");
+      const ask = () =>
+        agent.runAgent({ conversationId: conv.createConversation().id, message: "What can you do for me?", customer: ctx.customer, llm: llm.mockLLM() });
+      assert.match((await ask()).reply, /Refund a charge/);
+      sk.setSkillEnabled("refund_charge", false);
+      try {
+        const fewer = (await ask()).reply;
+        assert.doesNotMatch(fewer, /Refund a charge/);
+        assert.match(fewer, /Cancel a subscription/);
+      } finally {
+        sk.setSkillEnabled("refund_charge", true);
+      }
+    });
+
+    it("the conduct skill is locked on and cannot be switched off", async () => {
+      const sk = await import("./skills.ts");
+      sk.setSkillEnabled("conduct", false);
+      assert.equal(sk.isSkillEnabled("conduct"), true);
+      assert.ok(tools.activeTools().some((t) => t.name === "list_my_skills"));
+    });
+
+    it("a reply that claims a change that did not happen is replaced with the facts", async () => {
+      fresh();
+      const liar = { name: "liar", live: false, async generate() { return [{ text: "Done! I've refunded your $89 and cancelled everything." }]; } };
+      const out = await agent.runAgent({ conversationId: conv.createConversation().id, message: "refund it", customer: ctx.customer, llm: liar as any });
+      assert.doesNotMatch(out.reply, /I've refunded/);
+      assert.match(out.reply, /haven't made any changes/i);
+      assert.equal(store.getCharge("C-2004")?.status, "COMPLETED");
+    });
+
+    it("honest replies are left alone", async () => {
+      const rc = await import("./reply-check.ts");
+      const done = [{ type: "tool_result", name: "request_refund", result: { status: "ok", data: {} } }] as any;
+      assert.equal(rc.falseActionClaim("I've refunded it.", done), false);
+      assert.equal(rc.falseActionClaim("Your subscription is already cancelled.", []), false);
+      assert.equal(rc.falseActionClaim("I've sent your request for approval.", []), false);
+    });
+  });
+
+  describe("decisions need a reason that the customer sees", () => {
+    const queued = async () => {
+      const c = conv.createConversation();
+      const seen = [{ role: "user" as const, parts: [{ functionResponse: { name: "list_charges", response: { result: { status: "ok", data: { charges: [{ id: "C-2004" }], subscriptions: [] } } } } }] }];
+      const refund = { charge_id: "C-2004", amount: 89, reason: "does not recognise it" };
+      conv.addMessage(c.id, { role: "user", text: "refund the 89 please" });
+      const base = { ...ctx, conversationId: c.id, history: seen };
+      await tools.callTool("request_refund", refund, { ...base, userMessage: "refund the 89 please" });
+      conv.addMessage(c.id, { role: "user", text: "Yes, go ahead" });
+      const q: any = await tools.callTool("request_refund", refund, { ...base, userMessage: "Yes, go ahead" });
+      return { c, q };
+    };
+
+    it("refuses to approve or decline without a reason", async () => {
+      fresh();
+      const { q } = await queued();
+      assert.equal(q.status, "pending_approval");
+      for (const approve of [true, false]) {
+        const r = await tools.decideApproval(q.approvalId, approve, { reason: "  " });
+        assert.equal(r.status, "error");
+      }
+      assert.equal(tools.listApprovals("PENDING").length, 1);
+      assert.equal(store.getCharge("C-2004")?.status, "COMPLETED");
+    });
+
+    it("a declined request tells the customer why, in their own conversation, and the status tool repeats it", async () => {
+      fresh();
+      const { c, q } = await queued();
+      const r = await tools.decideApproval(q.approvalId, false, { reason: "The service was delivered as described" });
+      assert.equal(r.status, "ok");
+      const last = conv.getMessages(c.id).at(-1)!;
+      assert.equal(last.model, "acme-digital");
+      assert.match(last.text, /declined/i);
+      assert.match(last.text, /service was delivered as described/i);
+      const s: any = await tools.callTool("check_request_status", { approval_id: q.approvalId }, ctx);
+      assert.match(JSON.stringify(s.data), /service was delivered as described/);
+    });
+
+    it("an approved request tells the customer why and carries the refund out", async () => {
+      fresh();
+      const { c, q } = await queued();
+      const r = await tools.decideApproval(q.approvalId, true, { reason: "Confirmed as a duplicate charge" });
+      assert.equal(r.status, "ok");
+      assert.equal(store.getCharge("C-2004")?.status, "REFUNDED");
+      const last = conv.getMessages(c.id).at(-1)!;
+      assert.match(last.text, /approved/i);
+      assert.match(last.text, /duplicate charge/i);
     });
   });
 

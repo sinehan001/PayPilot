@@ -85,9 +85,18 @@ export function AccountPanel({ state }: { state: State }) {
 
 // ---------------------------------------------------------------------------------------------
 
+const QUICK_REASONS = [
+  "Verified as a duplicate charge",
+  "Service was not delivered as described",
+  "Outside our refund policy",
+  "The service was delivered as described",
+  "We need more information first",
+];
+
 export function ApprovalsPanel({ approvals, onDecided }: { approvals: Approval[]; onDecided: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [reasons, setReasons] = useState<Record<string, string>>({});
   const pending = approvals.filter((a) => a.status === "PENDING");
   const done = approvals.filter((a) => a.status !== "PENDING");
 
@@ -95,7 +104,11 @@ export function ApprovalsPanel({ approvals, onDecided }: { approvals: Approval[]
     setBusy(id);
     setErr(null);
     try {
-      await api(`/api/approvals/${id}/${action}`, { method: "POST" });
+      await api(`/api/approvals/${id}/${action}`, { method: "POST", body: JSON.stringify({ reason: (reasons[id] ?? "").trim() }) });
+      setReasons((r) => {
+        const { [id]: _drop, ...rest } = r;
+        return rest;
+      });
     } catch (e: any) {
       setErr(e.message);
     } finally {
@@ -123,21 +136,45 @@ export function ApprovalsPanel({ approvals, onDecided }: { approvals: Approval[]
           </div>
           <p className="mt-2 text-sm font-semibold">{describe(a)}</p>
           <p className="mt-1 text-sm text-muted">{a.reason}</p>
-          <div className="mt-3 flex gap-2">
+          <label className="mt-3 block">
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">Your reason (the customer will see this)</span>
+            <textarea
+              rows={2}
+              maxLength={300}
+              value={reasons[a.id] ?? ""}
+              onChange={(e) => setReasons((r) => ({ ...r, [a.id]: e.target.value }))}
+              placeholder="Explain your decision in a sentence or two"
+              className="mt-1 w-full resize-none rounded-lg border border-line bg-white px-3 py-2 text-base sm:text-sm"
+            />
+          </label>
+          <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Quick reasons">
+            {QUICK_REASONS.map((q) => (
+              <button
+                key={q}
+                type="button"
+                onClick={() => setReasons((r) => ({ ...r, [a.id]: q }))}
+                className="rounded-full border border-line bg-white px-3 py-1.5 text-xs text-ink hover:border-accent hover:text-accent"
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
             <button
               onClick={() => decide(a.id, "approve")}
-              disabled={busy === a.id}
-              className="min-h-11 rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-white hover:bg-accent-dark disabled:opacity-50"
+              disabled={busy === a.id || (reasons[a.id] ?? "").trim().length < 3}
+              className="min-h-11 rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-white hover:bg-accent-dark disabled:opacity-40"
             >
               {busy === a.id ? "Working..." : "Approve"}
             </button>
             <button
               onClick={() => decide(a.id, "reject")}
-              disabled={busy === a.id}
-              className="min-h-11 rounded-lg border border-line bg-white px-5 py-2 text-sm font-semibold text-ink hover:border-slate-400 disabled:opacity-50"
+              disabled={busy === a.id || (reasons[a.id] ?? "").trim().length < 3}
+              className="min-h-11 rounded-lg border border-line bg-white px-5 py-2 text-sm font-semibold text-ink hover:border-slate-400 disabled:opacity-40"
             >
               Reject
             </button>
+            {(reasons[a.id] ?? "").trim().length < 3 && <span className="text-xs text-muted">Add a reason to approve or reject.</span>}
           </div>
         </div>
       ))}
@@ -146,9 +183,12 @@ export function ApprovalsPanel({ approvals, onDecided }: { approvals: Approval[]
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">History</h3>
           <ul className="divide-y divide-line rounded-xl border border-line bg-white">
             {done.map((a) => (
-              <li key={a.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
-                <span className="min-w-0 truncate">{describe(a)}</span>
-                <Badge tone={a.status === "APPROVED" ? "green" : "gray"}>{a.status === "APPROVED" ? "Approved" : "Rejected"}</Badge>
+              <li key={a.id} className="px-4 py-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="min-w-0 truncate">{describe(a)}</span>
+                  <Badge tone={a.status === "APPROVED" ? "green" : "gray"}>{a.status === "APPROVED" ? "Approved" : "Rejected"}</Badge>
+                </div>
+                {a.decision_reason && <p className="mt-1 text-xs text-muted">Reason given to the customer: {a.decision_reason}</p>}
               </li>
             ))}
           </ul>
@@ -174,6 +214,8 @@ const AUDIT_TONE: Record<string, "green" | "amber" | "red" | "blue" | "gray"> = 
   policy_changed: "amber",
   skill_checks: "blue",
   skill_toggled: "amber",
+  tone_flag: "amber",
+  reply_corrected: "red",
 };
 
 export function AuditPanel({ refreshKey }: { refreshKey: number }) {
@@ -312,6 +354,12 @@ export function RequestsPanel({ approvals }: { approvals: Approval[] }) {
                 </div>
                 <Badge tone={s.tone}>{s.text}</Badge>
               </div>
+              {a.status !== "PENDING" && a.decision_reason && (
+                <p className="mt-2 rounded-lg bg-surface px-3 py-2 text-sm">
+                  <span className="font-semibold">Reason from Acme Digital: </span>
+                  {a.decision_reason}
+                </p>
+              )}
               <p className="mt-2 text-xs text-muted">
                 Reference {a.id} · {time(a.ts)}
               </p>

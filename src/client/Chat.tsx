@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { AgentEvent, ConversationSummary } from "./api";
+import type { AgentEvent, ConversationSummary, SkillInfo } from "./api";
 
 function ago(iso: string): string {
   const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -113,9 +113,12 @@ export function MessageBubble({ m }: { m: Msg }) {
             ? "bg-accent text-white"
             : m.error
               ? "border border-red-200 bg-red-50 text-red-800"
-              : "border border-line bg-surface text-ink"
+              : m.model === "acme-digital"
+                ? "border border-blue-200 bg-blue-50 text-ink"
+                : "border border-line bg-surface text-ink"
         }`}
       >
+        {m.model === "acme-digital" && <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-accent-dark">Message from Acme Digital</p>}
         <Rich text={m.text} />
         {m.events && <Chips events={m.events} />}
         {m.events && <Checks events={m.events} />}
@@ -145,6 +148,7 @@ export default function Chat({
   onNew,
   pendingCount,
   onReview,
+  skills,
 }: {
   messages: Msg[];
   busy: boolean;
@@ -156,6 +160,7 @@ export default function Chat({
   onNew: () => void;
   pendingCount: number;
   onReview: () => void;
+  skills: SkillInfo[];
 }) {
   const [text, setText] = useState("");
   const [open, setOpen] = useState(false);
@@ -251,9 +256,20 @@ export default function Chat({
           <div className="mx-auto max-w-md pt-6 text-center">
             <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-accent text-xl font-bold text-white">P</div>
             <h2 className="text-lg font-semibold">Hi Priya, how can I help with your billing?</h2>
-            <p className="mt-1 text-sm text-muted">
-              I can explain a charge, cancel a subscription, or request a refund. Refunds follow Acme Digital's policy, and anything
-              above the limit goes to a human.
+            <p className="mt-1 text-sm text-muted">I'm an AI assistant for Acme Digital billing. This is exactly what I can help with:</p>
+            <ul className="mx-auto mt-4 max-w-sm space-y-2 text-left" aria-label="What I can help with">
+              {skills
+                .filter((s) => s.kind !== "conduct" && s.enabled)
+                .map((s) => (
+                  <li key={s.id} className="rounded-xl border border-line bg-surface px-3.5 py-2.5">
+                    <p className="text-sm font-semibold">{s.name}</p>
+                    <p className="text-xs text-muted">{s.description}</p>
+                  </li>
+                ))}
+            </ul>
+            <p className="mx-auto mt-3 max-w-sm text-xs text-muted">
+              I can't change plans or prices, promise a refund (the merchant's policy and a person decide, and you'll be told why), or help with
+              anything outside billing. If I can't help, I'll pass you to a person.
             </p>
             <div className="mt-5 flex flex-wrap justify-center gap-2">
               {STARTERS.map((s) => (

@@ -10,6 +10,7 @@
     "build": "vite build",
     "start": "tsx src/server/index.ts",
     "spike": "tsx scripts/spike.ts",
+    "safety": "tsx scripts/safety-suite.ts",
     "paypal:setup": "tsx scripts/paypal-link.ts setup",
     "paypal:sync": "tsx scripts/paypal-link.ts sync",
     "test": "tsx --test src/**/*.test.ts",

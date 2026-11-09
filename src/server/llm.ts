@@ -1,3 +1,4 @@
+import { detectTone } from "./tone.ts";
 import type { ToolDef } from "./tools.ts";
 
 /** Provider-agnostic LLM layer. Gemini for real runs, a deterministic mock for demo mode. */
@@ -19,6 +20,19 @@ export interface LLM {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * Gemini 3 rejects a conversation whose earlier tool calls came from a different model and so carry no
+ * "thought signature". Google documents a placeholder value for exactly this case (a conversation moved
+ * between models), so we add it only where a signature is missing. Untested against Gemini here.
+ */
+function withSignatures(history: Content[]): Content[] {
+  return history.map((c) =>
+    c.role === "model"
+      ? { ...c, parts: c.parts.map((p) => (p.functionCall && !p.thoughtSignature ? { ...p, thoughtSignature: "skip_thought_signature_validator" } : p)) }
+      : c,
+  );
+}
+
 export function geminiLLM(apiKey: string, model: string): LLM {
   return {
     name: `gemini:${model}`,
@@ -26,7 +40,7 @@ export function geminiLLM(apiKey: string, model: string): LLM {
     async generate(system, history, tools) {
       const body = {
         systemInstruction: { parts: [{ text: system }] },
-        contents: history,
+        contents: withSignatures(history),
         tools: [{ functionDeclarations: tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters })) }],
       };
       let lastErr = "";
@@ -196,10 +210,8 @@ function lastApprovalRef(history: Content[]): string | undefined {
 }
 
 export function mockLLM(): LLM {
-  return {
-    name: "demo-mock",
-    live: false,
-    async generate(_system, history) {
+  /** One scripted step. It uses the same tool loop as a real model, so every guardrail still runs. */
+  const step = async (history: Content[]): Promise<Part[]> => {
       const { text, index } = lastUserText(history);
       const msg = text.toLowerCase();
       const res = responsesSince(history, index);
@@ -211,6 +223,25 @@ export function mockLLM(): LLM {
       const proposal = lastProposal(history);
       if (res.length === 0 && proposal && /^\s*(yes|yep|yeah|yup|y|ok|okay|sure|confirm|confirmed|go ahead|do it|please do|proceed)\b/.test(msg))
         return [{ functionCall: { name: proposal.tool, args: proposal.args } }];
+
+      // A plain "no" to a proposal: change nothing.
+      if (/^\s*(no|nope|nah|never ?mind)\b/.test(msg)) return [{ text: "No problem. I won't change anything. Is there anything else I can help with?" }];
+
+      // "What can you do?", venting, or anything outside billing: answer from the real skills tool.
+      const billingWords = /(refund|money back|cancel|charge|charged|\$|\d|payment|subscription|invoice|bill|renew|stream|cloud|fit|update|status|what happened)/.test(msg);
+      if (/\b(what (can|do) you (do|help)|what are your skills|how can you help|what can i ask|your abilities)\b/.test(msg) || !billingWords) {
+        const sk = res.find((r) => r.name === "list_my_skills")?.response?.result;
+        if (!sk) return [{ functionCall: { name: "list_my_skills", args: {} } }];
+        const d = sk.data;
+        return [
+          {
+            text:
+              "Here is what I can help with:\n" +
+              d.i_can_help_with.map((x: any) => `- ${x.what}: ${x.description}`).join("\n") +
+              `\nThings I can't do: ${d.i_cannot.join("; ")}. ${d.if_you_need_more}`,
+          },
+        ];
+      }
 
       // Follow-up about an earlier request ("any update on my refund?"): use the real status tool.
       if (/\b(update|status|what happened|any news|heard back|progress|decision)\b/.test(msg) && !/\b(please|can you|could you) (cancel|refund)\b/.test(msg)) {
@@ -270,6 +301,17 @@ export function mockLLM(): LLM {
         return `${money(c.amount)} on ${c.date} was ${c.description}${s ? ` (subscription ${s.id}, ${s.status.toLowerCase()})` : ""}.${renew}`;
       });
       return [{ text: lines.join("\n") + "\nWant me to cancel it or request a refund?" }];
+  };
+
+  return {
+    name: "demo-mock",
+    live: false,
+    async generate(_system, history) {
+      const parts = await step(history);
+      // Like a real model that has been told to stay kind: an upset customer gets patience first.
+      if (detectTone(lastUserText(history).text) === "upset" && !parts.some((p) => p.functionCall) && typeof parts[0]?.text === "string")
+        parts[0] = { text: "I'm sorry this has been frustrating, and I understand. " + parts[0].text };
+      return parts;
     },
   };
 }

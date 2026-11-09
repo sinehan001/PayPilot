@@ -6,7 +6,8 @@ import { evaluateCancel, evaluateRefund, getPolicy } from "./policy.ts";
 import * as store from "./store.ts";
 import { paypalConfigured } from "./paypal.ts";
 import { ppCancelSubscription, ppRefundCapture } from "./paypalOps.ts";
-import { gate, isSkillEnabled, skillForTool, type CheckResult } from "./skills.ts";
+import { addMessage } from "./conversations.ts";
+import { customerSkillSummary, gate, isSkillEnabled, skillForTool, type CheckResult } from "./skills.ts";
 import type { Content } from "./llm.ts";
 
 export interface ToolCtx {
@@ -80,6 +81,17 @@ export const tools: ToolDef[] = [
     },
   },
   {
+    name: "list_my_skills",
+    description:
+      "List exactly what you can and cannot help with, and what you need from the customer for each. Call this when the customer asks what you can do, is confused, or asks for something outside your skills.",
+    kind: "read",
+    parameters: obj({}),
+    zod: z.object({}),
+    run() {
+      return { status: "ok", data: customerSkillSummary() };
+    },
+  },
+  {
     name: "check_request_status",
     description:
       "Check the current status of an earlier refund or cancellation request using its reference number (like AP-1a2b3c4d). Use this when the customer asks what happened to a request.",
@@ -92,15 +104,24 @@ export const tools: ToolDef[] = [
       const p = JSON.parse(row.payload);
       const owner = p.charge_id ? store.getCharge(p.charge_id)?.customer : store.getSubscription(p.subscription_id)?.customer;
       if (owner !== ctx.customer) return { status: "error", message: "No request found with that reference." };
+      const why = row.decision_reason ? ` Reason from ${store.MERCHANT}: ${row.decision_reason}` : "";
       const outcome =
         row.status === "PENDING"
-          ? "Still waiting for a human to review it."
+          ? "Still waiting for a person to review it."
           : row.status === "APPROVED"
-            ? "A human approved it and it was carried out."
-            : "A human reviewed it and declined it.";
+            ? `A person approved it and it was carried out.${why}`
+            : `A person reviewed it and declined it.${why}`;
       return {
         status: "ok",
-        data: { reference: row.id, type: row.kind, state: row.status, outcome, requested_at: row.ts, decided_at: row.decided_ts },
+        data: {
+          reference: row.id,
+          type: row.kind,
+          state: row.status,
+          outcome,
+          decision_reason: row.decision_reason,
+          requested_at: row.ts,
+          decided_at: row.decided_ts,
+        },
       };
     },
   },
@@ -116,7 +137,7 @@ export const tools: ToolDef[] = [
       if (s.status === "CANCELLED") return { status: "error", message: "Subscription is already cancelled." };
       const d = evaluateCancel(getPolicy());
       if (d.decision === "allow") return executeCancel(s.id, a.reason, "auto-policy");
-      return queue("cancel", { subscription_id: s.id, product: s.product, reason: a.reason }, d.reason);
+      return queue("cancel", { subscription_id: s.id, product: s.product, reason: a.reason }, d.reason, ctx.conversationId);
     },
   },
   {
@@ -141,7 +162,7 @@ export const tools: ToolDef[] = [
       });
       if (d.decision === "deny") return { status: "denied", reason: d.reason };
       if (d.decision === "needs_approval")
-        return queue("refund", { charge_id: c.id, amount: a.amount, description: c.description, reason: a.reason }, d.reason);
+        return queue("refund", { charge_id: c.id, amount: a.amount, description: c.description, reason: a.reason }, d.reason, ctx.conversationId);
       return executeRefund(c.id, a.amount, a.reason, "auto-policy");
     },
   },
@@ -194,14 +215,15 @@ async function executeCancel(subscriptionId: string, reason: string, by: string)
   return { status: "ok", data: { cancelled: s.id, product: s.product, live: Boolean(paypal) } };
 }
 
-function queue(kind: "refund" | "cancel", payload: Record<string, unknown>, reason: string): ToolResult {
+function queue(kind: "refund" | "cancel", payload: Record<string, unknown>, reason: string, conversationId?: string): ToolResult {
   const id = "AP-" + randomUUID().slice(0, 8);
-  db.prepare("insert into approvals(id,ts,kind,payload,reason,status) values(?,?,?,?,?,'PENDING')").run(
+  db.prepare("insert into approvals(id,ts,kind,payload,reason,status,conversation_id) values(?,?,?,?,?,'PENDING',?)").run(
     id,
     new Date().toISOString(),
     kind,
     JSON.stringify(payload),
     reason,
+    conversationId ?? null,
   );
   logAudit("system", "approval_requested", `Approval ${id} requested: ${kind}`, { id, kind, payload, reason });
   return {
@@ -219,6 +241,9 @@ export interface ApprovalRow {
   reason: string;
   status: "PENDING" | "APPROVED" | "REJECTED";
   decided_ts: string | null;
+  /** Why the merchant approved or declined. Required, and shown to the customer. */
+  decision_reason: string | null;
+  conversation_id: string | null;
 }
 
 export function listApprovals(status?: string): ApprovalRow[] {
@@ -229,17 +254,44 @@ export function listApprovals(status?: string): ApprovalRow[] {
   ) as ApprovalRow[];
 }
 
-export async function decideApproval(id: string, approve: boolean, decidedBy = "merchant"): Promise<ToolResult> {
+/** Plain-words description of what a request was for, used in messages to the customer. */
+function describeRequest(row: ApprovalRow): string {
+  const p = JSON.parse(row.payload);
+  return row.kind === "refund" ? `refund of $${Number(p.amount).toFixed(2)} for "${p.description}"` : `cancellation of ${p.product}`;
+}
+
+/** Tell the customer, inside the conversation the request came from, what was decided and why. */
+function notifyCustomer(row: ApprovalRow, approved: boolean, reason: string) {
+  if (!row.conversation_id) return;
+  const what = describeRequest(row);
+  const text = approved
+    ? `Update from ${store.MERCHANT}: your ${what} was approved and carried out.\nReason: ${reason}`
+    : `Update from ${store.MERCHANT}: your ${what} was declined.\nReason: ${reason}\nIf you disagree, reply here and a person will follow up.`;
+  addMessage(row.conversation_id, { role: "agent", text, model: "acme-digital" });
+}
+
+/** Approve or decline a request. A reason is required either way: the customer is told it. */
+export async function decideApproval(id: string, approve: boolean, opts: { reason: string; decidedBy?: string }): Promise<ToolResult> {
+  const decidedBy = opts.decidedBy ?? "merchant";
+  const reason = (opts.reason ?? "").trim();
+  if (reason.length < 3) return { status: "error", message: "Please give a reason. The customer will see it." };
   const row = db.prepare("select * from approvals where id=?").get(id) as ApprovalRow | undefined;
   if (!row) return { status: "error", message: "Approval not found." };
   if (row.status !== "PENDING") return { status: "error", message: `Already ${row.status.toLowerCase()}.` };
-  db.prepare("update approvals set status=?, decided_ts=? where id=?").run(
+  db.prepare("update approvals set status=?, decided_ts=?, decision_reason=? where id=?").run(
     approve ? "APPROVED" : "REJECTED",
     new Date().toISOString(),
+    reason,
     id,
   );
-  logAudit(decidedBy, approve ? "approval_granted" : "approval_rejected", `${decidedBy} ${approve ? "approved" : "rejected"} ${id}`, { id });
-  if (!approve) return { status: "ok", data: { id, status: "REJECTED" } };
+  logAudit(decidedBy, approve ? "approval_granted" : "approval_rejected", `${decidedBy} ${approve ? "approved" : "rejected"} ${id}: ${reason.slice(0, 80)}`, {
+    id,
+    reason,
+  });
+  if (!approve) {
+    notifyCustomer(row, false, reason);
+    return { status: "ok", data: { id, status: "REJECTED", reason } };
+  }
   const p = JSON.parse(row.payload);
   const result =
     row.kind === "refund"
@@ -247,8 +299,10 @@ export async function decideApproval(id: string, approve: boolean, decidedBy = "
       : await executeCancel(p.subscription_id, p.reason ?? "approved by merchant", decidedBy);
   if (result.status === "error") {
     // Execution failed at PayPal: reopen the approval so it can be retried.
-    db.prepare("update approvals set status='PENDING', decided_ts=null where id=?").run(id);
+    db.prepare("update approvals set status='PENDING', decided_ts=null, decision_reason=null where id=?").run(id);
+    return result;
   }
+  notifyCustomer(row, true, reason);
   return result;
 }
 

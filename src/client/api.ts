@@ -25,6 +25,8 @@ export interface Approval {
   payload: string;
   reason: string;
   status: "PENDING" | "APPROVED" | "REJECTED";
+  /** Why the merchant approved or declined. Shown to the customer. */
+  decision_reason?: string | null;
 }
 export interface Policy {
   autoRefundLimit: number;
@@ -70,7 +72,8 @@ export interface SkillInfo {
   name: string;
   description: string;
   whenToUse: string;
-  kind: "read" | "write";
+  kind: "read" | "write" | "conduct";
+  locked: boolean;
   tools: string[];
   enabled: boolean;
   conditions: string[];

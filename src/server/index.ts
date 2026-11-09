@@ -82,6 +82,7 @@ app.put("/api/skills/:id", (req, res) => {
   const skill = skills.find((s) => s.id === req.params.id);
   const body = z.object({ enabled: z.boolean() }).safeParse(req.body);
   if (!skill || !body.success) return res.status(400).json({ error: "Invalid skill or value" });
+  if (skill.locked) return res.status(400).json({ error: "This skill is always on: it is how the AI treats every customer." });
   setSkillEnabled(skill.id, body.data.enabled);
   logAudit("merchant", "skill_toggled", `Merchant switched "${skill.name}" ${body.data.enabled ? "on" : "off"}`, { skill: skill.id, enabled: body.data.enabled });
   res.json(describeSkills());
@@ -101,7 +102,9 @@ app.get("/api/approvals", (_req, res) => res.json(listApprovals()));
 app.post("/api/approvals/:id/:action", async (req, res) => {
   const { id, action } = req.params;
   if (action !== "approve" && action !== "reject") return res.status(400).json({ error: "Bad action" });
-  const r = await decideApproval(id, action === "approve");
+  const body = z.object({ reason: z.string().trim().min(3).max(300) }).safeParse(req.body);
+  if (!body.success) return res.status(400).json({ error: "Please give a reason (at least 3 characters). The customer will see it." });
+  const r = await decideApproval(id, action === "approve", { reason: body.data.reason });
   res.status(r.status === "error" ? 400 : 200).json(r);
 });
 

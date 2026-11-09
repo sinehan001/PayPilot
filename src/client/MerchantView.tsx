@@ -51,29 +51,39 @@ function SkillsPanel({ refreshKey, onChanged }: { refreshKey: number; onChanged:
               <h3 className="text-sm font-semibold">{s.name}</h3>
               <span
                 className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-medium ring-1 ${
-                  s.kind === "write" ? "bg-amber-50 text-amber-800 ring-amber-200" : "bg-emerald-50 text-emerald-700 ring-emerald-200"
+                  s.kind === "write"
+                    ? "bg-amber-50 text-amber-800 ring-amber-200"
+                    : s.kind === "conduct"
+                      ? "bg-blue-50 text-accent-dark ring-blue-200"
+                      : "bg-emerald-50 text-emerald-700 ring-emerald-200"
                 }`}
               >
-                {s.kind === "write" ? "Changes the account" : "Read only"}
+                {s.kind === "write" ? "Changes the account" : s.kind === "conduct" ? "How the AI behaves" : "Read only"}
               </span>
             </div>
-            <button
-              role="switch"
-              aria-checked={s.enabled}
-              aria-label={`${s.name} skill`}
-              onClick={() => toggle(s)}
-              className={`relative h-7 w-12 shrink-0 rounded-full transition ${s.enabled ? "bg-accent" : "bg-slate-300"}`}
-            >
-              <span
-                className={`absolute left-0.5 top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform ${s.enabled ? "translate-x-5" : "translate-x-0"}`}
-              />
-            </button>
+            {s.locked ? (
+              <span className="shrink-0 rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600 ring-1 ring-slate-200">Always on</span>
+            ) : (
+              <button
+                role="switch"
+                aria-checked={s.enabled}
+                aria-label={`${s.name} skill`}
+                onClick={() => toggle(s)}
+                className={`relative h-7 w-12 shrink-0 rounded-full transition ${s.enabled ? "bg-accent" : "bg-slate-300"}`}
+              >
+                <span
+                  className={`absolute left-0.5 top-0.5 h-6 w-6 rounded-full bg-white shadow transition-transform ${s.enabled ? "translate-x-5" : "translate-x-0"}`}
+                />
+              </button>
+            )}
           </div>
           <p className="mt-2 text-sm">{s.description}</p>
           <p className="mt-1 text-xs text-muted">Used when: {s.whenToUse}</p>
           {s.conditions.length > 0 && (
             <div className="mt-3">
-              <p className="text-xs font-semibold uppercase tracking-wide text-muted">Must all be true first</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted">
+                {s.kind === "conduct" ? "How it treats every customer" : "Must all be true first"}
+              </p>
               <ul className="mt-1.5 space-y-1">
                 {s.conditions.map((c) => (
                   <li key={c} className="flex gap-2 text-sm">
@@ -86,7 +96,9 @@ function SkillsPanel({ refreshKey, onChanged }: { refreshKey: number; onChanged:
               </ul>
             </div>
           )}
-          <p className="mt-3 text-xs text-muted">If a condition fails: {s.escalation}</p>
+          <p className="mt-3 text-xs text-muted">
+            {s.kind === "conduct" ? "If it gets difficult" : "If a condition fails"}: {s.escalation}
+          </p>
         </article>
       ))}
     </div>
