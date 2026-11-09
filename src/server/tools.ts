@@ -6,19 +6,29 @@ import { evaluateCancel, evaluateRefund, getPolicy } from "./policy.ts";
 import * as store from "./store.ts";
 import { paypalConfigured } from "./paypal.ts";
 import { ppCancelSubscription, ppRefundCapture } from "./paypalOps.ts";
+import { gate, isSkillEnabled, skillForTool, type CheckResult } from "./skills.ts";
+import type { Content } from "./llm.ts";
 
 export interface ToolCtx {
   /** The authenticated customer. Tools can only touch this customer's data. */
   customer: string;
   /** Per-message budget of account changes. Stops "refund everything" style blast radius. */
   writes?: { used: number; max: number };
+  /** Set when the call comes from a conversation: lets skills verify look-ups and confirmations. */
+  conversationId?: string;
+  /** The customer's latest message, exactly as typed. */
+  userMessage?: string;
+  /** The conversation so far (live array). */
+  history?: Content[];
 }
 
-export type ToolResult =
+export type ToolResult = (
   | { status: "ok"; data: unknown }
   | { status: "pending_approval"; approvalId: string; message: string }
+  | { status: "needs_confirmation"; message: string; summary: string; proposal: { tool: string; args: Record<string, unknown> } }
   | { status: "denied"; reason: string }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string }
+) & { checks?: CheckResult[] };
 
 export interface ToolDef {
   name: string;
@@ -255,22 +265,61 @@ export async function callTool(name: string, rawArgs: unknown, ctx: ToolCtx): Pr
     return { status: "error", message: "Invalid arguments: " + parsed.error.issues.map((i) => i.message).join("; ") };
   }
   logAudit("agent", "tool_call", `${name} (${tool.kind})`, { name, args: parsed.data });
-  if (tool.kind === "write" && ctx.writes) {
-    if (ctx.writes.used >= ctx.writes.max) {
-      const denied: ToolResult = {
-        status: "denied",
-        reason: "Only one account change can be made per message. Ask the customer which single item they want, and do it in a separate request.",
-      };
-      logAudit("system", "tool_result", `${name} -> denied (change limit per message)`, { name, status: "denied", reason: denied.reason });
+
+  let checks: CheckResult[] | undefined;
+  if (tool.kind === "write") {
+    // 1. The skill's conditions, checked in code. The AI cannot talk its way past these.
+    const g = gate(name, parsed.data, ctx);
+    checks = g.checks;
+    const skill = skillForTool(name);
+    if (g.checks.length) {
+      const passed = g.checks.filter((c) => c.ok).length;
+      logAudit("system", "skill_checks", `${skill?.name ?? name}: ${passed}/${g.checks.length} conditions met`, { skill: skill?.id, checks: g.checks });
+    }
+    if (g.outcome === "denied") {
+      const denied: ToolResult = { status: "denied", reason: g.reason, checks };
+      logAudit("system", "tool_result", `${name} -> denied (${g.reason})`, { name, status: "denied", reason: g.reason });
       return denied;
     }
-    ctx.writes.used++;
+    if (g.outcome === "needs_confirmation") {
+      const r: ToolResult = {
+        status: "needs_confirmation",
+        summary: g.summary,
+        proposal: g.proposal,
+        message: `Ask the customer to confirm: ${g.summary}. Do nothing until they reply yes.`,
+        checks,
+      };
+      logAudit("system", "tool_result", `${name} -> needs_confirmation`, { name, status: "needs_confirmation", summary: g.summary });
+      return r;
+    }
+    // 2. Blast-radius limit: one account change per customer message.
+    if (ctx.writes) {
+      if (ctx.writes.used >= ctx.writes.max) {
+        const denied: ToolResult = {
+          status: "denied",
+          reason: "Only one account change can be made per message. Ask the customer which single item they want, and do it in a separate request.",
+          checks,
+        };
+        logAudit("system", "tool_result", `${name} -> denied (change limit per message)`, { name, status: "denied", reason: denied.reason });
+        return denied;
+      }
+      ctx.writes.used++;
+    }
   }
+  // 3. Merchant policy (limits, window, daily cap) decides inside the tool.
   const result = await tool.run(parsed.data, ctx);
   logAudit("system", "tool_result", `${name} -> ${result.status}`, {
     name,
     status: result.status,
     ...(result.status === "denied" ? { reason: result.reason } : {}),
   });
-  return result;
+  return checks ? { ...result, checks } : result;
+}
+
+/** Tools the AI is allowed to see: only those whose skill the merchant has switched on. */
+export function activeTools(): ToolDef[] {
+  return tools.filter((t) => {
+    const s = skillForTool(t.name);
+    return !s || isSkillEnabled(s.id);
+  });
 }

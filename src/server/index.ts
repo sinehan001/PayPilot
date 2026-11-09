@@ -9,6 +9,7 @@ import { addMessage, clearAllConversations, createConversation, getConversation,
 import { listAudit, verifyChain, logAudit } from "./audit.ts";
 import { selectLLM } from "./llm.ts";
 import { paypalConfigured } from "./paypal.ts";
+import { describeSkills, setSkillEnabled, skills } from "./skills.ts";
 import { getPolicy, PolicySchema, setPolicy } from "./policy.ts";
 import * as store from "./store.ts";
 import { decideApproval, listApprovals } from "./tools.ts";
@@ -74,6 +75,16 @@ app.get("/api/merchant/summary", (_req, res) => {
     blockedByPolicy: n("select count(*) c from audit where type='tool_result' and json_extract(detail,'$.status')='denied'"),
     conversations: n("select count(*) c from conversations"),
   });
+});
+
+app.get("/api/skills", (_req, res) => res.json(describeSkills()));
+app.put("/api/skills/:id", (req, res) => {
+  const skill = skills.find((s) => s.id === req.params.id);
+  const body = z.object({ enabled: z.boolean() }).safeParse(req.body);
+  if (!skill || !body.success) return res.status(400).json({ error: "Invalid skill or value" });
+  setSkillEnabled(skill.id, body.data.enabled);
+  logAudit("merchant", "skill_toggled", `Merchant switched "${skill.name}" ${body.data.enabled ? "on" : "off"}`, { skill: skill.id, enabled: body.data.enabled });
+  res.json(describeSkills());
 });
 
 app.get("/api/policy", (_req, res) => res.json(getPolicy()));

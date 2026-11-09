@@ -47,7 +47,8 @@ export function geminiLLM(apiKey: string, model: string): LLM {
           // Return the model's parts untouched (keeps thought signatures valid across turns).
           const parts = json.candidates?.[0]?.content?.parts;
           if (parts?.length) return parts;
-          return [{ text: "I couldn't produce an answer for that. Please rephrase." }];
+          lastErr = "empty reply"; // treat as a failure so the chain can try the next model
+          break;
         }
         lastErr = `${res.status} ${(await res.text()).slice(0, 200)}`;
         if (res.status === 429 || res.status >= 500) await sleep(800 * (attempt + 1));
@@ -142,7 +143,9 @@ export function nvidiaLLM(apiKey: string, model: string, baseUrl = "https://inte
         }
         parts.push({ functionCall: { name: tc.function?.name, args, id: tc.id } });
       }
-      return parts.length ? parts : [{ text: "I couldn't produce an answer for that. Please rephrase." }];
+      // An empty reply is a failure, not an answer: let the chain try the next model.
+      if (!parts.length) throw new Error(`NVIDIA ${model} returned an empty reply`);
+      return parts;
     },
   };
 }
@@ -169,6 +172,19 @@ function responsesSince(history: Content[], index: number): { name: string; resp
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 
+/** The proposal still waiting for the customer's yes, if the latest account action asked for one. */
+function lastProposal(history: Content[]): { tool: string; args: Record<string, unknown> } | undefined {
+  for (let i = history.length - 1; i >= 0; i--)
+    for (const p of history[i].parts) {
+      const fr = p.functionResponse;
+      if (fr && (fr.name === "request_refund" || fr.name === "cancel_subscription")) {
+        const r = fr.response?.result;
+        return r?.status === "needs_confirmation" ? r.proposal : undefined;
+      }
+    }
+  return undefined;
+}
+
 /** Most recent approval reference this conversation has produced, if any. */
 function lastApprovalRef(history: Content[]): string | undefined {
   for (let i = history.length - 1; i >= 0; i--)
@@ -190,6 +206,11 @@ export function mockLLM(): LLM {
       const intent = /cancel|stop (it|renew)/.test(msg) ? "cancel" : /refund|money back/.test(msg) ? "refund" : "explain";
       const amountMatch = msg.match(/\$?\s?(\d+(?:\.\d{1,2})?)/);
       const amount = amountMatch ? parseFloat(amountMatch[1]) : undefined;
+
+      // The customer said yes to a proposed refund/cancellation: call the same tool again with the same arguments.
+      const proposal = lastProposal(history);
+      if (res.length === 0 && proposal && /^\s*(yes|yep|yeah|yup|y|ok|okay|sure|confirm|confirmed|go ahead|do it|please do|proceed)\b/.test(msg))
+        return [{ functionCall: { name: proposal.tool, args: proposal.args } }];
 
       // Follow-up about an earlier request ("any update on my refund?"): use the real status tool.
       if (/\b(update|status|what happened|any news|heard back|progress|decision)\b/.test(msg) && !/\b(please|can you|could you) (cancel|refund)\b/.test(msg)) {
@@ -234,6 +255,7 @@ export function mockLLM(): LLM {
 
       if (last.name === "cancel_subscription" || last.name === "request_refund") {
         const r = last.response.result;
+        if (r.status === "needs_confirmation") return [{ text: `Before I do this, please confirm: ${r.summary}. Reply "yes" and I'll go ahead.` }];
         if (r.status === "ok") return [{ text: last.name === "cancel_subscription" ? "Done. Your subscription is cancelled and won't renew." : `Done. Your refund of ${money(r.data.amount)} was approved and issued.` }];
         if (r.status === "pending_approval") return [{ text: `I've sent this for approval (ref ${r.approvalId}). ${r.message} You'll hear back once it's reviewed.` }];
         if (r.status === "denied") return [{ text: `I can't do that: ${r.reason}` }];

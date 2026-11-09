@@ -29,7 +29,8 @@ const TOOL_LABEL: Record<string, string> = {
 const RESULT: Record<string, { label: string; cls: string }> = {
   ok: { label: "Done", cls: "bg-emerald-50 text-emerald-700 ring-emerald-200" },
   pending_approval: { label: "Sent for approval", cls: "bg-amber-50 text-amber-800 ring-amber-200" },
-  denied: { label: "Blocked by policy", cls: "bg-red-50 text-red-700 ring-red-200" },
+  needs_confirmation: { label: "Waiting for your confirmation", cls: "bg-blue-50 text-accent-dark ring-blue-200" },
+  denied: { label: "Blocked by safety rules", cls: "bg-red-50 text-red-700 ring-red-200" },
   error: { label: "Failed, nothing changed", cls: "bg-slate-100 text-slate-700 ring-slate-200" },
 };
 
@@ -75,6 +76,34 @@ function Chips({ events }: { events: AgentEvent[] }) {
   );
 }
 
+/** The conditions the system verified before the AI could act. Collapsed by default. */
+function Checks({ events }: { events: AgentEvent[] }) {
+  const lists = events.flatMap((e) => (e.type === "tool_result" && e.result.checks?.length ? [e.result.checks] : []));
+  if (!lists.length) return null;
+  const last = lists[lists.length - 1];
+  const met = last.filter((c) => c.ok).length;
+  return (
+    <details className="mt-2 rounded-lg bg-white/70 px-3 py-2 text-xs ring-1 ring-slate-200">
+      <summary className="min-h-6 cursor-pointer font-medium text-slate-700">
+        Safety checks: {met} of {last.length} met
+      </summary>
+      <ul className="mt-2 space-y-1.5">
+        {last.map((c) => (
+          <li key={c.id} className="flex gap-2">
+            <span className={c.ok ? "text-emerald-600" : "text-red-600"} aria-hidden="true">
+              {c.ok ? "✓" : "✗"}
+            </span>
+            <span className="min-w-0">
+              <span className={c.skipped ? "text-slate-400" : "text-slate-700"}>{c.label}</span>
+              {!c.ok && c.detail && <span className="block text-red-700">{c.detail}</span>}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
+
 export function MessageBubble({ m }: { m: Msg }) {
   return (
     <div className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
@@ -89,6 +118,7 @@ export function MessageBubble({ m }: { m: Msg }) {
       >
         <Rich text={m.text} />
         {m.events && <Chips events={m.events} />}
+        {m.events && <Checks events={m.events} />}
         {m.model === "demo-mock" && (
           <p className="mt-2 text-xs text-amber-700">Live AI was slow, so the scripted demo AI answered. Policy checks still ran.</p>
         )}
@@ -144,10 +174,18 @@ export default function Chat({
   };
   const lastAgent = [...messages].reverse().find((m) => m.role === "agent");
   const hasPending = lastAgent?.events?.some((e) => e.type === "tool_result" && e.result.status === "pending_approval");
-  const followUps = [
-    ...(hasPending ? [{ label: "Any update on my refund request?", text: "Any update on my refund request?" }] : []),
-    ...STARTERS.filter((s) => !(hasPending && s.label.startsWith("Refund"))),
-  ].slice(0, 4);
+  const lastEvents = lastAgent?.events ?? [];
+  const lastWrite = [...lastEvents].reverse().find((e) => e.type === "tool_result" && e.name !== "list_charges" && e.name !== "get_subscription" && e.name !== "check_request_status");
+  const awaitingConfirm = lastWrite?.type === "tool_result" && lastWrite.result.status === "needs_confirmation";
+  const followUps = awaitingConfirm
+    ? [
+        { label: "Yes, go ahead", text: "Yes, please go ahead." },
+        { label: "No, never mind", text: "No, never mind." },
+      ]
+    : [
+        ...(hasPending ? [{ label: "Any update on my refund request?", text: "Any update on my refund request?" }] : []),
+        ...STARTERS.filter((s) => !(hasPending && s.label.startsWith("Refund"))),
+      ].slice(0, 4);
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, busy]);

@@ -29,6 +29,9 @@ create table if not exists messages(
   id integer primary key autoincrement, conversation_id text not null, ts text not null,
   role text not null, text text not null, events text not null default '[]', model text, error integer not null default 0);
 create index if not exists idx_messages_conv on messages(conversation_id, id);
+create table if not exists proposals(
+  id text primary key, conversation_id text not null, tool text not null, key text not null,
+  args text not null, turn integer not null, status text not null, created_at text not null);
 `);
 
 // Migration: demo rows can be linked to real PayPal sandbox objects.

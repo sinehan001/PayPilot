@@ -58,6 +58,24 @@ export interface AuditResp {
   rows: AuditRow[];
   chain: { ok: boolean; count: number; brokenAt?: number };
 }
+export interface CheckResult {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail?: string;
+  skipped?: boolean;
+}
+export interface SkillInfo {
+  id: string;
+  name: string;
+  description: string;
+  whenToUse: string;
+  kind: "read" | "write";
+  tools: string[];
+  enabled: boolean;
+  conditions: string[];
+  escalation: string;
+}
 export interface MerchantSummary {
   pending: number;
   refundedToday: number;
@@ -83,7 +101,7 @@ export interface StoredMessage {
 }
 export type AgentEvent =
   | { type: "tool_call"; name: string; args: unknown; kind: "read" | "write" }
-  | { type: "tool_result"; name: string; result: { status: string; reason?: string; message?: string } }
+  | { type: "tool_result"; name: string; result: { status: string; reason?: string; message?: string; summary?: string; checks?: CheckResult[] } }
   | { type: "message"; text: string };
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {

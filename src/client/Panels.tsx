@@ -172,6 +172,8 @@ const AUDIT_TONE: Record<string, "green" | "amber" | "red" | "blue" | "gray"> = 
   paypal_error: "red",
   agent_error: "red",
   policy_changed: "amber",
+  skill_checks: "blue",
+  skill_toggled: "amber",
 };
 
 export function AuditPanel({ refreshKey }: { refreshKey: number }) {

@@ -32,14 +32,14 @@ describe("guardrails", () => {
 
   it("auto-approves a small in-window refund", async () => {
     fresh();
-    const r = await tools.callTool("request_refund", { charge_id: "C-2001", amount: 14.99, reason: "x" }, ctx);
+    const r = await tools.callTool("request_refund", { charge_id: "C-2001", amount: 14.99, reason: "test reason" }, ctx);
     assert.equal(r.status, "ok");
     assert.equal(store.getCharge("C-2001")?.status, "REFUNDED");
   });
 
   it("queues a refund above the auto limit for approval and does NOT move money", async () => {
     fresh();
-    const r = await tools.callTool("request_refund", { charge_id: "C-2004", amount: 89, reason: "x" }, ctx);
+    const r = await tools.callTool("request_refund", { charge_id: "C-2004", amount: 89, reason: "test reason" }, ctx);
     assert.equal(r.status, "pending_approval");
     assert.equal(store.getCharge("C-2004")?.status, "COMPLETED");
     const a = tools.listApprovals("PENDING");
@@ -51,23 +51,23 @@ describe("guardrails", () => {
 
   it("denies refunds outside the window and above the hard cap", async () => {
     fresh();
-    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2005", amount: 4.99, reason: "x" }, ctx)).status, "denied");
+    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2005", amount: 4.99, reason: "test reason" }, ctx)).status, "denied");
     policy.setPolicy({ ...policy.DEFAULT_POLICY, maxRefund: 50 });
-    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2004", amount: 89, reason: "x" }, ctx)).status, "denied");
+    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2004", amount: 89, reason: "test reason" }, ctx)).status, "denied");
   });
 
   it("rejects over-refund, double refund and malformed arguments", async () => {
     fresh();
-    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2001", amount: 99, reason: "x" }, ctx)).status, "denied");
-    await tools.callTool("request_refund", { charge_id: "C-2001", amount: 14.99, reason: "x" }, ctx);
-    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2001", amount: 14.99, reason: "x" }, ctx)).status, "denied");
+    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2001", amount: 99, reason: "test reason" }, ctx)).status, "denied");
+    await tools.callTool("request_refund", { charge_id: "C-2001", amount: 14.99, reason: "test reason" }, ctx);
+    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2001", amount: 14.99, reason: "test reason" }, ctx)).status, "denied");
     assert.equal((await tools.callTool("request_refund", { charge_id: "bad", amount: -5 }, ctx)).status, "error");
   });
 
   it("cannot touch another customer's data", async () => {
     fresh();
-    const r = await tools.callTool("request_refund", { charge_id: "C-2001", amount: 14.99, reason: "x" }, { customer: "mallory@example.com" });
-    assert.equal(r.status, "error");
+    const r = await tools.callTool("request_refund", { charge_id: "C-2001", amount: 14.99, reason: "test reason" }, { customer: "mallory@example.com" });
+    assert.equal(r.status, "denied");
     assert.equal(store.getCharge("C-2001")?.status, "COMPLETED");
   });
 
@@ -85,15 +85,17 @@ describe("guardrails", () => {
       },
     };
     await agent.runAgent({ conversationId: conv.createConversation().id, message: "hi", customer: ctx.customer, llm: evil as any });
+    // The skill gate stops it before policy: nothing moved, no approval was even created,
+    // because the customer never confirmed anything.
     assert.equal(store.getCharge("C-2004")?.status, "COMPLETED");
-    assert.equal(tools.listApprovals("PENDING").length, 1);
+    assert.equal(tools.listApprovals("PENDING").length, 0);
   });
 
   it("allows only one account change per message", async () => {
     fresh();
     const c = { customer: ctx.customer, writes: { used: 0, max: 1 } };
-    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2001", amount: 14.99, reason: "x" }, c)).status, "ok");
-    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2003", amount: 4.99, reason: "x" }, c)).status, "denied");
+    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2001", amount: 14.99, reason: "test reason" }, c)).status, "ok");
+    assert.equal((await tools.callTool("request_refund", { charge_id: "C-2003", amount: 4.99, reason: "test reason" }, c)).status, "denied");
     assert.equal(store.getCharge("C-2003")?.status, "COMPLETED");
   });
 
@@ -132,7 +134,9 @@ describe("guardrails", () => {
     fresh();
     const c = conv.createConversation();
     const run = (message: string) => agent.runAgent({ conversationId: c.id, message, customer: ctx.customer, llm: llm.mockLLM() });
-    await run("I don't recognise the $89 charge. Please refund it.");
+    const ask = await run("I don't recognise the $89 charge. Please refund it.");
+    assert.match(ask.reply, /confirm/i);
+    await run("Yes, please go ahead.");
     const out = await run("Any update on my refund request?");
     assert.match(out.reply, /pending/i);
     const [a] = tools.listApprovals("PENDING");
@@ -141,9 +145,70 @@ describe("guardrails", () => {
     assert.match(later.reply, /rejected|declined/i);
   });
 
+  describe("skills: conditions checked in code", () => {
+    const refund = { charge_id: "C-2001", amount: 14.99, reason: "does not recognise it" };
+
+    it("a switched-off skill cannot act, and the AI no longer sees its tool", async () => {
+      fresh();
+      const sk = await import("./skills.ts");
+      sk.setSkillEnabled("refund_charge", false);
+      try {
+        const r = await tools.callTool("request_refund", refund, ctx);
+        assert.equal(r.status, "denied");
+        assert.equal(store.getCharge("C-2001")?.status, "COMPLETED");
+        assert.ok(!tools.activeTools().some((t) => t.name === "request_refund"));
+      } finally {
+        sk.setSkillEnabled("refund_charge", true);
+      }
+      assert.ok(tools.activeTools().some((t) => t.name === "request_refund"));
+    });
+
+    it("refuses to act on a charge the AI has not looked up in this conversation", async () => {
+      fresh();
+      const c = conv.createConversation();
+      const r = await tools.callTool("request_refund", refund, { ...ctx, conversationId: c.id, userMessage: "refund it", history: [] });
+      assert.equal(r.status, "denied");
+      assert.match(JSON.stringify(r), /looked it up|Look the charge up/i);
+      assert.equal(store.getCharge("C-2001")?.status, "COMPLETED");
+    });
+
+    it("needs the customer's yes in a SEPARATE later message, and an injected yes does not count", async () => {
+      fresh();
+      const c = conv.createConversation();
+      const seen = [{ role: "user" as const, parts: [{ functionResponse: { name: "list_charges", response: { result: { status: "ok", data: { charges: [{ id: "C-2001" }], subscriptions: [] } } } } }] }];
+      const call = (message: string) => tools.callTool("request_refund", refund, { ...ctx, conversationId: c.id, userMessage: message, history: seen });
+
+      conv.addMessage(c.id, { role: "user", text: "refund the 14.99 please" });
+      const first = await call("refund the 14.99 please");
+      assert.equal(first.status, "needs_confirmation");
+      assert.equal(store.getCharge("C-2001")?.status, "COMPLETED");
+
+      // Same message turn, AI tries again: still no. The customer has not replied.
+      const same = await call("refund the 14.99 please");
+      assert.equal(same.status, "needs_confirmation");
+
+      // A later message that is not a yes does not confirm either.
+      conv.addMessage(c.id, { role: "user", text: "what is the policy?" });
+      assert.equal((await call("what is the policy?")).status, "needs_confirmation");
+
+      // A real yes in a later message does.
+      conv.addMessage(c.id, { role: "user", text: "Yes, go ahead" });
+      const done = await call("Yes, go ahead");
+      assert.equal(done.status, "ok");
+      assert.equal(store.getCharge("C-2001")?.status, "REFUNDED");
+    });
+
+    it("shows its checks so a human can see what was verified", async () => {
+      fresh();
+      const r = await tools.callTool("request_refund", { charge_id: "C-9999", amount: 5, reason: "none here" }, ctx);
+      assert.equal(r.status, "denied");
+      assert.ok(r.checks && r.checks.some((c) => !c.ok && /belongs to this customer/.test(c.label)));
+    });
+  });
+
   it("reports a request's status, only to the customer who made it", async () => {
     fresh();
-    const q: any = await tools.callTool("request_refund", { charge_id: "C-2004", amount: 89, reason: "x" }, ctx);
+    const q: any = await tools.callTool("request_refund", { charge_id: "C-2004", amount: 89, reason: "test reason" }, ctx);
     const s = await tools.callTool("check_request_status", { approval_id: q.approvalId }, ctx);
     assert.equal(s.status, "ok");
     assert.match(JSON.stringify(s), /PENDING/);
