@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { buildSuggestions } from "./suggestions";
 import Chat, { type Msg } from "./Chat";
 import MerchantView from "./MerchantView";
 import { AccountPanel, RequestsPanel } from "./Panels";
@@ -185,6 +186,7 @@ export default function App() {
     setDemoRunning(false);
   }, [refresh, send, setActive, setRole]);
 
+  const suggestions = useMemo(() => buildSuggestions({ turns: messages, state, skills }), [messages, state, skills]);
   const pending = state?.approvals.filter((a) => a.status === "PENDING").length ?? 0;
   const tabs: { id: Tab; label: string; badge?: number }[] = [
     { id: "account", label: "My account" },
@@ -329,6 +331,7 @@ export default function App() {
                 onNew={newChat}
                 pendingCount={pending}
                 skills={skills}
+                suggestions={suggestions}
                 onReview={() => {
                   setTab("requests");
                   setMobile("activity");
