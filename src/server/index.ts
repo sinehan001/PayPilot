@@ -22,7 +22,7 @@ app.get("/api/health", (_req, res) => {
   res.json({
     ok: true,
     demoAI: !llm.live,
-    model: llm.name,
+    model: llm.primary ?? llm.name,
     paypalSandboxConfigured: paypalConfigured(),
     customer: store.DEMO_CUSTOMER,
     merchant: store.MERCHANT,

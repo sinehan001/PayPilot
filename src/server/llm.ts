@@ -8,7 +8,11 @@ export interface Content {
   parts: Part[];
 }
 export interface LLM {
+  /** Model that answered most recently (changes if the chain falls back). */
   name: string;
+  /** Configured primary model name; stable. */
+  primary?: string;
+  /** True when a real model is configured. Stable: a one-off fallback does not flip this. */
   live: boolean;
   generate(system: string, history: Content[], tools: ToolDef[]): Promise<Part[]>;
 }
@@ -252,6 +256,7 @@ export function mockLLM(): LLM {
 export function chainLLM(llms: LLM[]): LLM {
   const self: LLM = {
     name: llms[0].name,
+    primary: llms[0].name,
     live: llms[0].live,
     async generate(system, history, tools) {
       let last: unknown;
@@ -259,7 +264,6 @@ export function chainLLM(llms: LLM[]): LLM {
         try {
           const parts = await l.generate(system, history, tools);
           self.name = l.name;
-          self.live = l.live;
           return parts;
         } catch (e) {
           last = e;
