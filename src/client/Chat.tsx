@@ -104,6 +104,23 @@ export default function Chat({
   const [open, setOpen] = useState(false);
   const active = conversations.find((c) => c.id === activeId);
   const end = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  /** A suggestion only fills the box. The customer can edit it, then press Send. */
+  const fill = (t: string) => {
+    setText(t);
+    requestAnimationFrame(() => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(t.length, t.length);
+    });
+  };
+  const lastAgent = [...messages].reverse().find((m) => m.role === "agent");
+  const hasPending = lastAgent?.events?.some((e) => e.type === "tool_result" && e.result.status === "pending_approval");
+  const followUps = [
+    ...(hasPending ? [{ label: "Any update on my refund request?", text: "Any update on my refund request?" }] : []),
+    ...STARTERS.filter((s) => !(hasPending && s.label.startsWith("Refund"))),
+  ].slice(0, 4);
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, busy]);
@@ -174,7 +191,7 @@ export default function Chat({
               {STARTERS.map((s) => (
                 <button
                   key={s.label}
-                  onClick={() => onSend(s.text)}
+                  onClick={() => fill(s.text)}
                   disabled={busy || disabled}
                   className="rounded-full border border-line bg-white px-3.5 py-2 text-sm text-ink transition hover:border-accent hover:text-accent disabled:opacity-50"
                 >
@@ -216,14 +233,30 @@ export default function Chat({
           <div ref={end} />
         </div>
       </div>
+      {messages.length > 0 && (
+        <div className="flex gap-2 overflow-x-auto border-t border-line px-3 pt-2.5" aria-label="Suggested questions">
+          {followUps.map((s) => (
+            <button
+              key={s.label}
+              type="button"
+              onClick={() => fill(s.text)}
+              disabled={busy || disabled}
+              className="shrink-0 rounded-full border border-line bg-white px-3 py-1.5 text-xs text-ink transition hover:border-accent hover:text-accent disabled:opacity-50"
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
       <form
-        className="flex gap-2 border-t border-line p-3"
+        className={`flex gap-2 p-3 ${messages.length > 0 ? "" : "border-t border-line"}`}
         onSubmit={(e) => {
           e.preventDefault();
           submit();
         }}
       >
         <input
+          ref={inputRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder="Ask about a charge, a refund, or a cancellation"

@@ -55,6 +55,95 @@ export function geminiLLM(apiKey: string, model: string): LLM {
 }
 
 // ---------------------------------------------------------------------------
+// NVIDIA NIM (OpenAI-compatible chat API at integrate.api.nvidia.com).
+// Our saved conversations use one neutral format, so this adapter converts to and from it.
+// ---------------------------------------------------------------------------
+
+/** Gemini-style schemas use "OBJECT"/"STRING"; OpenAI-style JSON Schema wants lowercase. */
+function toJsonSchema(s: any): any {
+  if (Array.isArray(s)) return s.map(toJsonSchema);
+  if (s && typeof s === "object") {
+    const o: Record<string, any> = {};
+    for (const [k, v] of Object.entries(s)) o[k] = k === "type" && typeof v === "string" ? v.toLowerCase() : toJsonSchema(v);
+    return o;
+  }
+  return s;
+}
+
+function toOpenAIMessages(system: string, history: Content[]): any[] {
+  const msgs: any[] = [{ role: "system", content: system }];
+  let pending: { id: string; name: string }[] = [];
+  let n = 0;
+  for (const c of history) {
+    if (c.role === "model") {
+      const text = c.parts.filter((p) => typeof p.text === "string" && !p.thought).map((p) => p.text).join("");
+      pending = [];
+      const tool_calls = c.parts
+        .filter((p) => p.functionCall)
+        .map((p) => {
+          const id = String(p.functionCall.id ?? `call_${++n}`);
+          pending.push({ id, name: p.functionCall.name });
+          return { id, type: "function", function: { name: p.functionCall.name, arguments: JSON.stringify(p.functionCall.args ?? {}) } };
+        });
+      msgs.push({ role: "assistant", content: text || null, ...(tool_calls.length ? { tool_calls } : {}) });
+    } else {
+      for (const p of c.parts.filter((x) => x.functionResponse)) {
+        const fr = p.functionResponse;
+        const i = pending.findIndex((x) => x.name === fr.name);
+        const id = String(fr.id ?? (i >= 0 ? pending.splice(i, 1)[0].id : `call_${++n}`));
+        msgs.push({ role: "tool", tool_call_id: id, content: JSON.stringify(fr.response?.result ?? fr.response ?? {}) });
+      }
+      const text = c.parts.filter((p) => typeof p.text === "string").map((p) => p.text).join("\n");
+      if (text) msgs.push({ role: "user", content: text });
+    }
+  }
+  return msgs;
+}
+
+export function nvidiaLLM(apiKey: string, model: string, baseUrl = "https://integrate.api.nvidia.com/v1"): LLM {
+  return {
+    name: `nvidia:${model}`,
+    live: true,
+    async generate(system, history, tools) {
+      const body = {
+        model,
+        messages: toOpenAIMessages(system, history),
+        tools: tools.map((t) => ({
+          type: "function",
+          function: { name: t.name, description: t.description, parameters: toJsonSchema(t.parameters) },
+        })),
+        tool_choice: "auto",
+        temperature: 0.2,
+        max_tokens: 700,
+      };
+      const res = await fetch(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(Number(process.env.LLM_TIMEOUT_MS ?? 20_000)),
+      }).catch((e: Error) => {
+        throw new Error(`NVIDIA network/timeout: ${e.message}`);
+      });
+      if (!res.ok) throw new Error(`NVIDIA request failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
+      const json: any = await res.json();
+      const msg = json.choices?.[0]?.message;
+      const parts: Part[] = [];
+      if (msg?.content) parts.push({ text: String(msg.content) });
+      for (const tc of msg?.tool_calls ?? []) {
+        let args: unknown = {};
+        try {
+          args = JSON.parse(tc.function?.arguments || "{}");
+        } catch {
+          /* malformed arguments: leave empty, zod validation will reject it */
+        }
+        parts.push({ functionCall: { name: tc.function?.name, args, id: tc.id } });
+      }
+      return parts.length ? parts : [{ text: "I couldn't produce an answer for that. Please rephrase." }];
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Deterministic mock (DEMO MODE). Follows the same tool loop, so every guardrail still runs.
 // ---------------------------------------------------------------------------
 
@@ -183,13 +272,22 @@ export function chainLLM(llms: LLM[]): LLM {
   return self;
 }
 
+/**
+ * Order: the provider named in LLM_PROVIDER first, then the other one if its key exists,
+ * then the scripted demo AI. Any provider without a key is skipped.
+ */
 export function selectLLM(): LLM {
-  const provider = process.env.LLM_PROVIDER ?? "gemini";
-  const key = process.env.GEMINI_API_KEY;
-  if (provider === "gemini" && key) {
-    const models = [process.env.GEMINI_MODEL ?? "gemini-3-flash-preview", process.env.GEMINI_FALLBACK_MODEL ?? "gemini-3.1-flash-lite"];
-    const chain = [...new Set(models)].map((m) => geminiLLM(key, m));
-    return chainLLM([...chain, mockLLM()]);
-  }
-  return mockLLM();
+  const env = process.env;
+  const nvidia: LLM[] = env.NVIDIA_API_KEY
+    ? [...new Set([env.NVIDIA_MODEL ?? "meta/llama-3.3-70b-instruct", env.NVIDIA_FALLBACK_MODEL].filter(Boolean) as string[])].map((m) =>
+        nvidiaLLM(env.NVIDIA_API_KEY!, m, env.NVIDIA_BASE_URL),
+      )
+    : [];
+  const gemini: LLM[] = env.GEMINI_API_KEY
+    ? [...new Set([env.GEMINI_MODEL ?? "gemini-3-flash-preview", env.GEMINI_FALLBACK_MODEL ?? "gemini-3.1-flash-lite"])].map((m) =>
+        geminiLLM(env.GEMINI_API_KEY!, m),
+      )
+    : [];
+  const ordered = (env.LLM_PROVIDER ?? "nvidia") === "gemini" ? [...gemini, ...nvidia] : [...nvidia, ...gemini];
+  return ordered.length ? chainLLM([...ordered, mockLLM()]) : mockLLM();
 }
