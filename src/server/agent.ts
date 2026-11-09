@@ -1,5 +1,6 @@
 import { logAudit } from "./audit.ts";
-import { selectLLM, type Content, type LLM } from "./llm.ts";
+import { addMessage, getConversation, loadHistory, saveHistory } from "./conversations.ts";
+import { selectLLM, type Content, type LLM, type Part } from "./llm.ts";
 import { MERCHANT } from "./store.ts";
 import { callTool, tools, type ToolResult } from "./tools.ts";
 
@@ -9,7 +10,8 @@ export type AgentEvent =
   | { type: "message"; text: string };
 
 const MAX_STEPS = 6;
-const sessions = new Map<string, Content[]>();
+/** After this long away, remind the model that its earlier facts may be out of date. */
+const RESUME_AFTER_MS = Number(process.env.RESUME_AFTER_MIN ?? 30) * 60_000;
 
 function systemPrompt(customer: string): string {
   return [
@@ -22,21 +24,43 @@ function systemPrompt(customer: string): string {
     "- Refunds and cancellations are decided by merchant policy enforced by the system. Never promise an outcome; report exactly what the tool returned.",
     "- If a result is pending approval, tell the customer a human will review it and give the reference.",
     "- Use list_charges to find charges before acting. Only refund or cancel when the customer clearly asks.",
+    "- If the customer asks about an earlier request, use check_request_status with its reference before answering.",
+    "- If a system note says the customer is returning after a break, re-check with tools before stating current status.",
     "- Never do bulk actions. If asked to refund or cancel everything or all items, do NOT call any action tool: explain you can only handle one item at a time and ask which one.",
     "- Make at most one account change per customer message.",
     "- Be brief, warm and clear. Mention amounts, dates, and the yearly cost when useful. Plain text only: no markdown, no asterisks, no bullet symbols. Always write money with a dollar sign, like $89.00.",
   ].join("\n");
 }
 
+function humanGap(ms: number): string {
+  const m = Math.round(ms / 60_000);
+  if (m < 60) return `${m} minutes`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h} hour${h === 1 ? "" : "s"}` : `${Math.round(h / 24)} days`;
+}
+
 export async function runAgent(
-  opts: { sessionId: string; message: string; customer: string; llm?: LLM },
+  opts: { conversationId: string; message: string; customer: string; llm?: LLM },
   onEvent: (e: AgentEvent) => void = () => {},
 ): Promise<{ reply: string; events: AgentEvent[]; model: string }> {
+  const conv = getConversation(opts.conversationId);
+  if (!conv) throw new Error("Conversation not found");
   const llm = opts.llm ?? selectLLM();
-  const history = sessions.get(opts.sessionId) ?? [];
-  history.push({ role: "user", parts: [{ text: opts.message }] });
-  sessions.set(opts.sessionId, history);
-  logAudit("customer", "user_message", opts.message.slice(0, 200), { sessionId: opts.sessionId, model: llm.name });
+
+  // Resume with the saved context. If the customer was away a while, flag that facts may be stale.
+  const history: Content[] = loadHistory(conv.id);
+  const gap = Date.now() - new Date(conv.updated_at).getTime();
+  const parts: Part[] = [];
+  if (history.length && gap > RESUME_AFTER_MS) {
+    parts.push({
+      text: `[System note: the customer is returning after ${humanGap(gap)}. Anything said earlier about account state, pending requests or amounts may be out of date. Re-check with tools before stating current status or acting.]`,
+    });
+  }
+  parts.push({ text: opts.message });
+  history.push({ role: "user", parts });
+
+  addMessage(conv.id, { role: "user", text: opts.message });
+  logAudit("customer", "user_message", opts.message.slice(0, 200), { conversationId: conv.id, model: llm.name, resumed: gap > RESUME_AFTER_MS });
 
   const events: AgentEvent[] = [];
   const emit = (e: AgentEvent) => {
@@ -47,10 +71,10 @@ export async function runAgent(
   const ctx = { customer: opts.customer, writes: { used: 0, max: 1 } };
   let reply = "";
   for (let step = 0; step < MAX_STEPS; step++) {
-    const parts = await llm.generate(systemPrompt(opts.customer), history, tools);
-    history.push({ role: "model", parts });
-    const calls = parts.filter((p) => p.functionCall);
-    const text = parts
+    const modelParts = await llm.generate(systemPrompt(opts.customer), history, tools);
+    history.push({ role: "model", parts: modelParts });
+    const calls = modelParts.filter((p) => p.functionCall);
+    const text = modelParts
       .filter((p) => typeof p.text === "string" && !p.thought)
       .map((p) => p.text)
       .join("")
@@ -72,11 +96,10 @@ export async function runAgent(
     history.push({ role: "user", parts: responses });
   }
   if (!reply) reply = "I'm having trouble finishing that. A human will follow up.";
-  logAudit("agent", "agent_reply", reply.slice(0, 200), { sessionId: opts.sessionId });
+
+  saveHistory(conv.id, history);
+  addMessage(conv.id, { role: "agent", text: reply, events, model: llm.name });
+  logAudit("agent", "agent_reply", reply.slice(0, 200), { conversationId: conv.id });
   emit({ type: "message", text: reply });
   return { reply, events, model: llm.name };
-}
-
-export function resetSession(id: string) {
-  sessions.delete(id);
 }

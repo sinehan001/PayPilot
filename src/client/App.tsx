@@ -1,7 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Chat, { type Msg } from "./Chat";
 import { AccountPanel, ApprovalsPanel, AuditPanel, PolicyPanel } from "./Panels";
-import { api, type AgentEvent, type Health, type State } from "./api";
+import { api, type AgentEvent, type ConversationSummary, type Health, type State, type StoredMessage } from "./api";
+
+const LS_KEY = "paypilot.conversation";
+const lsGet = () => {
+  try {
+    return localStorage.getItem(LS_KEY);
+  } catch {
+    return null;
+  }
+};
+const lsSet = (id: string | null) => {
+  try {
+    if (id) localStorage.setItem(LS_KEY, id);
+    else localStorage.removeItem(LS_KEY);
+  } catch {
+    /* storage unavailable: the server still keeps everything */
+  }
+};
+const toMsg = (m: StoredMessage): Msg => ({ role: m.role, text: m.text, events: m.events, model: m.model ?? undefined, error: m.error });
 
 type Tab = "account" | "approvals" | "audit" | "policy";
 const DEMO_STEPS = [
@@ -23,6 +41,49 @@ export default function App() {
   const [tick, setTick] = useState(0);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const cancelled = useRef(false);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const activeRef = useRef<string | null>(null);
+
+  const setActive = useCallback((id: string | null) => {
+    activeRef.current = id;
+    setActiveId(id);
+    lsSet(id);
+  }, []);
+
+  const loadConversations = useCallback(async () => {
+    const list = await api<ConversationSummary[]>("/api/conversations").catch(() => [] as ConversationSummary[]);
+    setConversations(list);
+    return list;
+  }, []);
+
+  const openConversation = useCallback(
+    async (id: string) => {
+      try {
+        const r = await api<{ messages: StoredMessage[] }>(`/api/conversations/${id}`);
+        setMessages(r.messages.map(toMsg));
+        setActive(id);
+      } catch {
+        setActive(null);
+        setMessages([]);
+      }
+    },
+    [setActive],
+  );
+
+  const newChat = useCallback(() => {
+    setActive(null);
+    setMessages([]);
+  }, [setActive]);
+
+  // On load: restore the conversation you were in, so a refresh or a return an hour later picks up where you left off.
+  useEffect(() => {
+    loadConversations().then((list) => {
+      const saved = lsGet();
+      const target = list.find((c) => c.id === saved) ?? list[0];
+      if (target) openConversation(target.id);
+    });
+  }, [loadConversations, openConversation]);
 
   const refresh = useCallback(async () => {
     try {
@@ -46,10 +107,11 @@ export default function App() {
       setMessages((m) => [...m, { role: "user", text }]);
       setBusy(true);
       try {
-        const out = await api<{ reply: string; events: AgentEvent[]; model: string }>("/api/chat", {
+        const out = await api<{ reply: string; events: AgentEvent[]; model: string; conversationId: string }>("/api/chat", {
           method: "POST",
-          body: JSON.stringify({ sessionId: "demo", message: text }),
+          body: JSON.stringify({ conversationId: activeRef.current ?? undefined, message: text }),
         });
+        setActive(out.conversationId);
         setMessages((m) => [...m, { role: "agent", text: out.reply, events: out.events, model: out.model }]);
         if (out.events.some((e) => e.type === "tool_result" && e.result.status === "pending_approval")) setTab("approvals");
       } catch (e: any) {
@@ -57,23 +119,27 @@ export default function App() {
       } finally {
         setBusy(false);
         refresh();
+        loadConversations();
       }
     },
-    [refresh],
+    [refresh, loadConversations, setActive],
   );
 
   const reset = useCallback(async () => {
     cancelled.current = true;
     await api("/api/reset", { method: "POST" }).catch(() => {});
+    setActive(null);
     setMessages([]);
     setTab("account");
     refresh();
-  }, [refresh]);
+    loadConversations();
+  }, [refresh, loadConversations, setActive]);
 
   const runDemo = useCallback(async () => {
     cancelled.current = false;
     setDemoRunning(true);
     await api("/api/reset", { method: "POST" }).catch(() => {});
+    setActive(null);
     setMessages([]);
     setTab("account");
     await refresh();
@@ -84,7 +150,7 @@ export default function App() {
       await send(step);
     }
     setDemoRunning(false);
-  }, [refresh, send]);
+  }, [refresh, send, setActive]);
 
   const pending = state?.approvals.filter((a) => a.status === "PENDING").length ?? 0;
   const tabs: { id: Tab; label: string; badge?: number }[] = [
@@ -169,7 +235,16 @@ export default function App() {
 
       <main className="mx-auto grid min-h-0 w-full max-w-7xl flex-1 gap-4 p-3 sm:p-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,460px)]">
         <div className={`min-h-0 ${mobile === "chat" ? "block" : "hidden"} lg:block`}>
-          <Chat messages={messages} busy={busy} disabled={!health} onSend={send} />
+          <Chat
+            messages={messages}
+            busy={busy}
+            disabled={!health}
+            onSend={send}
+            conversations={conversations}
+            activeId={activeId}
+            onSelect={openConversation}
+            onNew={newChat}
+          />
         </div>
         <aside
           className={`min-h-0 flex-col rounded-2xl border border-line bg-white shadow-sm ${mobile === "activity" ? "flex" : "hidden"} lg:flex`}

@@ -58,6 +58,22 @@ export interface AuditResp {
   rows: AuditRow[];
   chain: { ok: boolean; count: number; brokenAt?: number };
 }
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  count: number;
+}
+export interface StoredMessage {
+  id: number;
+  ts: string;
+  role: "user" | "agent";
+  text: string;
+  events: AgentEvent[];
+  model: string | null;
+  error: boolean;
+}
 export type AgentEvent =
   | { type: "tool_call"; name: string; args: unknown; kind: "read" | "write" }
   | { type: "tool_result"; name: string; result: { status: string; reason?: string; message?: string } }

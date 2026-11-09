@@ -3,7 +3,8 @@ import express from "express";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
-import { runAgent, resetSession } from "./agent.ts";
+import { runAgent } from "./agent.ts";
+import { addMessage, clearAllConversations, createConversation, getConversation, getMessages, listConversations } from "./conversations.ts";
 import { listAudit, verifyChain, logAudit } from "./audit.ts";
 import { selectLLM } from "./llm.ts";
 import { paypalConfigured } from "./paypal.ts";
@@ -28,18 +29,30 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-const ChatBody = z.object({ sessionId: z.string().min(1).max(64), message: z.string().min(1).max(1000) });
+const ChatBody = z.object({ conversationId: z.string().min(1).max(32).optional(), message: z.string().min(1).max(1000) });
 
 app.post("/api/chat", async (req, res) => {
   const body = ChatBody.safeParse(req.body);
   if (!body.success) return res.status(400).json({ error: "Invalid request" });
+  const conv = body.data.conversationId ? getConversation(body.data.conversationId) : createConversation();
+  if (!conv) return res.status(404).json({ error: "Conversation not found" });
   try {
-    const out = await runAgent({ ...body.data, customer: store.DEMO_CUSTOMER, llm });
-    res.json(out);
+    const out = await runAgent({ conversationId: conv.id, message: body.data.message, customer: store.DEMO_CUSTOMER, llm });
+    res.json({ ...out, conversationId: conv.id });
   } catch (e: any) {
     logAudit("system", "agent_error", String(e.message).slice(0, 200));
-    res.status(502).json({ error: "The AI service is unavailable right now. Please try again in a moment." });
+    const msg = "The AI service is unavailable right now. Please try again in a moment.";
+    addMessage(conv.id, { role: "agent", text: msg, error: true });
+    res.status(502).json({ error: msg });
   }
+});
+
+app.get("/api/conversations", (_req, res) => res.json(listConversations()));
+app.post("/api/conversations", (_req, res) => res.json(createConversation()));
+app.get("/api/conversations/:id", (req, res) => {
+  const c = getConversation(req.params.id);
+  if (!c) return res.status(404).json({ error: "Conversation not found" });
+  res.json({ conversation: c, messages: getMessages(c.id) });
 });
 
 app.get("/api/state", (_req, res) => {
@@ -71,7 +84,7 @@ app.post("/api/approvals/:id/:action", async (req, res) => {
 
 app.post("/api/reset", (_req, res) => {
   store.resetAndSeed();
-  resetSession("demo");
+  clearAllConversations();
   logAudit("system", "demo_reset", "Demo data reset");
   res.json({ ok: true });
 });

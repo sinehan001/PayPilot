@@ -70,6 +70,31 @@ export const tools: ToolDef[] = [
     },
   },
   {
+    name: "check_request_status",
+    description:
+      "Check the current status of an earlier refund or cancellation request using its reference number (like AP-1a2b3c4d). Use this when the customer asks what happened to a request.",
+    kind: "read",
+    parameters: obj({ approval_id: { type: "STRING", description: "The reference, e.g. AP-1a2b3c4d" } }, ["approval_id"]),
+    zod: z.object({ approval_id: z.string().regex(/^AP-[0-9a-f]{8}$/) }),
+    run(a, ctx) {
+      const row = db.prepare("select * from approvals where id=?").get(a.approval_id) as ApprovalRow | undefined;
+      if (!row) return { status: "error", message: "No request found with that reference." };
+      const p = JSON.parse(row.payload);
+      const owner = p.charge_id ? store.getCharge(p.charge_id)?.customer : store.getSubscription(p.subscription_id)?.customer;
+      if (owner !== ctx.customer) return { status: "error", message: "No request found with that reference." };
+      const outcome =
+        row.status === "PENDING"
+          ? "Still waiting for a human to review it."
+          : row.status === "APPROVED"
+            ? "A human approved it and it was carried out."
+            : "A human reviewed it and declined it.";
+      return {
+        status: "ok",
+        data: { reference: row.id, type: row.kind, state: row.status, outcome, requested_at: row.ts, decided_at: row.decided_ts },
+      };
+    },
+  },
+  {
     name: "cancel_subscription",
     description: "Cancel a subscription so it stops renewing. Only use when the customer clearly asks to cancel.",
     kind: "write",

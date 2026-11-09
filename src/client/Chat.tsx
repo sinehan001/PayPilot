@@ -1,5 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import type { AgentEvent } from "./api";
+import type { AgentEvent, ConversationSummary } from "./api";
+
+function ago(iso: string): string {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} hr ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
 
 export interface Msg {
   role: "user" | "agent";
@@ -78,13 +86,23 @@ export default function Chat({
   busy,
   disabled,
   onSend,
+  conversations,
+  activeId,
+  onSelect,
+  onNew,
 }: {
   messages: Msg[];
   busy: boolean;
   disabled: boolean;
   onSend: (t: string) => void;
+  conversations: ConversationSummary[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  onNew: () => void;
 }) {
   const [text, setText] = useState("");
+  const [open, setOpen] = useState(false);
+  const active = conversations.find((c) => c.id === activeId);
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
     end.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -99,6 +117,50 @@ export default function Chat({
 
   return (
     <section className="flex h-full min-h-0 flex-col rounded-2xl border border-line bg-white shadow-sm" aria-label="Chat">
+      <div className="relative flex items-center justify-between gap-2 border-b border-line px-3 py-2">
+        <button
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className="shrink-0 rounded-lg border border-line bg-white px-3 py-1.5 text-sm font-medium hover:border-slate-400"
+        >
+          History ({conversations.length}) {open ? "▴" : "▾"}
+        </button>
+        <span className="min-w-0 flex-1 truncate text-center text-sm text-muted">{active ? active.title : "New conversation"}</span>
+        <button
+          onClick={() => {
+            setOpen(false);
+            onNew();
+          }}
+          disabled={busy}
+          className="shrink-0 rounded-lg bg-blue-50 px-3 py-1.5 text-sm font-semibold text-accent-dark hover:bg-blue-100 disabled:opacity-50"
+        >
+          + New chat
+        </button>
+        {open && (
+          <ul className="absolute left-2 right-2 top-full z-10 mt-1 max-h-80 overflow-y-auto rounded-xl border border-line bg-white shadow-lg">
+            {conversations.length === 0 && <li className="px-4 py-6 text-center text-sm text-muted">No saved conversations yet.</li>}
+            {conversations.map((c) => (
+              <li key={c.id} className="border-b border-line last:border-0">
+                <button
+                  onClick={() => {
+                    setOpen(false);
+                    onSelect(c.id);
+                  }}
+                  className={`flex w-full items-center justify-between gap-3 px-4 py-3 text-left hover:bg-surface ${c.id === activeId ? "bg-blue-50" : ""}`}
+                >
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">{c.title}</span>
+                    <span className="block text-xs text-muted">
+                      {c.count} message{c.count === 1 ? "" : "s"} · {ago(c.updated_at)}
+                    </span>
+                  </span>
+                  {c.id === activeId && <span className="shrink-0 text-xs font-semibold text-accent-dark">Open</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
       <div className="flex-1 overflow-y-auto p-4 sm:p-5" aria-live="polite">
         {messages.length === 0 && (
           <div className="mx-auto max-w-md pt-6 text-center">

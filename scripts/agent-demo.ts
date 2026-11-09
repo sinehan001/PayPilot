@@ -2,11 +2,13 @@ import "dotenv/config";
 import { runAgent } from "../src/server/agent.ts";
 import { selectLLM } from "../src/server/llm.ts";
 import * as store from "../src/server/store.ts";
+import { createConversation } from "../src/server/conversations.ts";
 import { listApprovals } from "../src/server/tools.ts";
 
 // Runs the demo story end to end with whatever LLM .env selects (Gemini if a key is set, else mock).
 store.resetAndSeed();
 const llm = selectLLM();
+const conv = createConversation("Demo");
 console.log("LLM:", llm.name, "\n");
 
 const prompts = [
@@ -17,7 +19,7 @@ const prompts = [
 ];
 for (const p of prompts) {
   console.log("USER:", p);
-  const out = await runAgent({ sessionId: "demo", message: p, customer: store.DEMO_CUSTOMER, llm }, (e) => {
+  const out = await runAgent({ conversationId: conv.id, message: p, customer: store.DEMO_CUSTOMER, llm }, (e) => {
     if (e.type === "tool_call") console.log("  tool_call:", e.name, JSON.stringify(e.args));
     if (e.type === "tool_result") console.log("  result   :", e.result.status);
   });

@@ -60,8 +60,9 @@ export function geminiLLM(apiKey: string, model: string): LLM {
 
 function lastUserText(history: Content[]): { text: string; index: number } {
   for (let i = history.length - 1; i >= 0; i--) {
-    const t = history[i].parts.find((p) => typeof p.text === "string");
-    if (history[i].role === "user" && t) return { text: t.text, index: i };
+    // Use the LAST text part: a resume note, when present, comes first.
+    const texts = history[i].parts.filter((p) => typeof p.text === "string");
+    if (history[i].role === "user" && texts.length) return { text: texts[texts.length - 1].text, index: i };
   }
   return { text: "", index: 0 };
 }
@@ -75,6 +76,16 @@ function responsesSince(history: Content[], index: number): { name: string; resp
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 
+/** Most recent approval reference this conversation has produced, if any. */
+function lastApprovalRef(history: Content[]): string | undefined {
+  for (let i = history.length - 1; i >= 0; i--)
+    for (const p of history[i].parts) {
+      const id = p.functionResponse?.response?.result?.approvalId;
+      if (typeof id === "string") return id;
+    }
+  return undefined;
+}
+
 export function mockLLM(): LLM {
   return {
     name: "demo-mock",
@@ -86,6 +97,19 @@ export function mockLLM(): LLM {
       const intent = /cancel|stop (it|renew)/.test(msg) ? "cancel" : /refund|money back/.test(msg) ? "refund" : "explain";
       const amountMatch = msg.match(/\$?\s?(\d+(?:\.\d{1,2})?)/);
       const amount = amountMatch ? parseFloat(amountMatch[1]) : undefined;
+
+      // Follow-up about an earlier request ("any update on my refund?"): use the real status tool.
+      if (/\b(update|status|what happened|any news|heard back|progress|decision)\b/.test(msg) && !/\b(please|can you|could you) (cancel|refund)\b/.test(msg)) {
+        const sr = res.find((r) => r.name === "check_request_status")?.response?.result;
+        if (!sr) {
+          const typed = msg.match(/ap-([0-9a-f]{8})/i);
+          const ref = typed ? `AP-${typed[1].toLowerCase()}` : lastApprovalRef(history);
+          if (!ref) return [{ text: "Which request do you mean? Send me its reference number, like AP-1a2b3c4d." }];
+          return [{ functionCall: { name: "check_request_status", args: { approval_id: ref } } }];
+        }
+        if (sr.status === "ok") return [{ text: `Your ${sr.data.type} request ${sr.data.reference} is ${String(sr.data.state).toLowerCase()}. ${sr.data.outcome}` }];
+        return [{ text: `I couldn't find that request: ${sr.message ?? "unknown reference"}` }];
+      }
 
       const list = res.find((r) => r.name === "list_charges")?.response?.result?.data as any;
       const last = res[res.length - 1];

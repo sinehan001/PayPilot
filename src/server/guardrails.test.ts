@@ -11,10 +11,12 @@ describe("guardrails", () => {
   let agent: typeof import("./agent.ts");
   let llm: typeof import("./llm.ts");
   let dbm: typeof import("./db.ts");
+  let conv: typeof import("./conversations.ts");
   const ctx = { customer: "priya@example.com" };
 
   before(async () => {
     dbm = await import("./db.ts");
+    conv = await import("./conversations.ts");
     tools = await import("./tools.ts");
     store = await import("./store.ts");
     audit = await import("./audit.ts");
@@ -23,7 +25,7 @@ describe("guardrails", () => {
     llm = await import("./llm.ts");
   });
   const fresh = () => {
-    dbm.db.exec("delete from audit");
+    dbm.db.exec("delete from audit; delete from messages; delete from conversations");
     store.resetAndSeed();
     policy.setPolicy(policy.DEFAULT_POLICY);
   };
@@ -82,7 +84,7 @@ describe("guardrails", () => {
         return [{ text: "done" }];
       },
     };
-    await agent.runAgent({ sessionId: "inj", message: "hi", customer: ctx.customer, llm: evil as any });
+    await agent.runAgent({ conversationId: conv.createConversation().id, message: "hi", customer: ctx.customer, llm: evil as any });
     assert.equal(store.getCharge("C-2004")?.status, "COMPLETED");
     assert.equal(tools.listApprovals("PENDING").length, 1);
   });
@@ -93,6 +95,60 @@ describe("guardrails", () => {
     assert.equal((await tools.callTool("request_refund", { charge_id: "C-2001", amount: 14.99, reason: "x" }, c)).status, "ok");
     assert.equal((await tools.callTool("request_refund", { charge_id: "C-2003", amount: 4.99, reason: "x" }, c)).status, "denied");
     assert.equal(store.getCharge("C-2003")?.status, "COMPLETED");
+  });
+
+
+  it("saves conversations and resumes with context", async () => {
+    fresh();
+    const c = conv.createConversation();
+    await agent.runAgent({ conversationId: c.id, message: "Why was I charged $14.99?", customer: ctx.customer, llm: llm.mockLLM() });
+    assert.equal(conv.getMessages(c.id).length, 2);
+    assert.equal(conv.getConversation(c.id)!.title, "Why was I charged $14.99?");
+    assert.ok(conv.loadHistory(c.id).length >= 3);
+    await agent.runAgent({ conversationId: c.id, message: "Thanks", customer: ctx.customer, llm: llm.mockLLM() });
+    assert.equal(conv.getMessages(c.id).length, 4);
+  });
+
+  it("adds a staleness note when a chat resumes after a long break", async () => {
+    fresh();
+    const c = conv.createConversation();
+    const seen: string[] = [];
+    const spy = {
+      name: "spy",
+      live: false,
+      async generate(_s: string, h: any[]) {
+        seen.push(JSON.stringify(h[h.length - 1]));
+        return [{ text: "ok" }];
+      },
+    };
+    await agent.runAgent({ conversationId: c.id, message: "hi", customer: ctx.customer, llm: spy as any });
+    dbm.db.prepare("update conversations set updated_at=? where id=?").run(new Date(Date.now() - 3 * 3600_000).toISOString(), c.id);
+    await agent.runAgent({ conversationId: c.id, message: "any update?", customer: ctx.customer, llm: spy as any });
+    assert.doesNotMatch(seen[0], /returning after/);
+    assert.match(seen[1], /returning after 3 hours/);
+  });
+
+  it("scripted AI answers a follow-up about an earlier request using the real status tool", async () => {
+    fresh();
+    const c = conv.createConversation();
+    const run = (message: string) => agent.runAgent({ conversationId: c.id, message, customer: ctx.customer, llm: llm.mockLLM() });
+    await run("I don't recognise the $89 charge. Please refund it.");
+    const out = await run("Any update on my refund request?");
+    assert.match(out.reply, /pending/i);
+    const [a] = tools.listApprovals("PENDING");
+    await tools.decideApproval(a.id, false);
+    const later = await run("Any update now?");
+    assert.match(later.reply, /rejected|declined/i);
+  });
+
+  it("reports a request's status, only to the customer who made it", async () => {
+    fresh();
+    const q: any = await tools.callTool("request_refund", { charge_id: "C-2004", amount: 89, reason: "x" }, ctx);
+    const s = await tools.callTool("check_request_status", { approval_id: q.approvalId }, ctx);
+    assert.equal(s.status, "ok");
+    assert.match(JSON.stringify(s), /PENDING/);
+    const other = await tools.callTool("check_request_status", { approval_id: q.approvalId }, { customer: "mallory@example.com" });
+    assert.equal(other.status, "error");
   });
 
   it("audit log is hash-chained and detects tampering", async () => {
@@ -109,7 +165,7 @@ describe("guardrails", () => {
 
   it("demo-mode mock agent completes an explain flow", async () => {
     fresh();
-    const out = await agent.runAgent({ sessionId: "m1", message: "Why was I charged $14.99?", customer: ctx.customer, llm: llm.mockLLM() });
+    const out = await agent.runAgent({ conversationId: conv.createConversation().id, message: "Why was I charged $14.99?", customer: ctx.customer, llm: llm.mockLLM() });
     assert.match(out.reply, /StreamBox/);
   });
 });
