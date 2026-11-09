@@ -332,21 +332,36 @@ export function PolicyPanel({ policy, onSaved }: { policy: Policy; onSaved: () =
           className="h-5 w-5 accent-[var(--color-accent)]"
         />
       </label>
-      <label className="block">
-        <span className="text-sm font-medium">Offer for customers who ask to cancel (optional)</span>
-        <span className="mt-0.5 block text-xs text-muted">
-          Shown once, in one neutral sentence, only after the customer has already asked to cancel. It never blocks or delays the cancellation.
-          The AI never brings up cancelling or refunds on its own.
-        </span>
-        <input
-          type="text"
-          maxLength={200}
-          value={p.retentionOffer ?? ""}
-          onChange={(e) => setP({ ...p, retentionOffer: e.target.value })}
-          placeholder="For example: 20% off your next 3 months if you stay"
-          className="mt-1.5 w-full rounded-lg border border-line bg-white px-3 py-2.5 text-base sm:text-sm"
-        />
-      </label>
+      <div className="rounded-xl border border-line bg-surface p-3.5">
+        <p className="text-sm font-semibold">Keeping customers who want to leave</p>
+        <p className="mt-0.5 text-xs text-muted">
+          The AI never brings up cancelling or refunds on its own. But the moment a customer asks to cancel, it can try, warmly and once, to
+          keep them, using their real account facts plus the lines below. It never delays or blocks the cancellation.
+        </p>
+        <label className="mt-3 block">
+          <span className="text-sm font-medium">Your offer (optional)</span>
+          <input
+            type="text"
+            maxLength={200}
+            value={p.retentionOffer ?? ""}
+            onChange={(e) => setP({ ...p, retentionOffer: e.target.value })}
+            placeholder="For example: 20% off your next 3 months"
+            className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2.5 text-base sm:text-sm"
+          />
+        </label>
+        <label className="mt-3 block">
+          <span className="text-sm font-medium">Why customers stay (optional, true facts only)</span>
+          <input
+            type="text"
+            maxLength={240}
+            value={p.retentionPitch ?? ""}
+            onChange={(e) => setP({ ...p, retentionPitch: e.target.value })}
+            placeholder="For example: Members get unlimited workouts and a free coaching call"
+            className="mt-1 w-full rounded-lg border border-line bg-white px-3 py-2.5 text-base sm:text-sm"
+          />
+        </label>
+        <p className="mt-2 text-xs text-muted">The AI cannot apply an offer itself. If the customer takes it, you get a request to apply it and reply.</p>
+      </div>
       <div className="flex items-center gap-3">
         <button onClick={save} className="min-h-11 rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-white hover:bg-accent-dark">
           Save policy

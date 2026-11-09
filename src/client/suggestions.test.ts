@@ -18,7 +18,7 @@ const state = (over: Partial<State> = {}): State => ({
     { id: "C-3", subscription_id: "S-2", amount: 4.99, date: day(25), description: "CloudNotes", status: "COMPLETED", note: null, paypal_id: null },
   ],
   approvals: [],
-  policy: { autoRefundLimit: 20, maxRefund: 200, refundWindowDays: 30, dailyRefundCap: 50, allowCustomerCancel: true, retentionOffer: "" },
+  policy: { autoRefundLimit: 20, maxRefund: 200, refundWindowDays: 30, dailyRefundCap: 50, allowCustomerCancel: true, retentionOffer: "", retentionPitch: "" },
   ...over,
 });
 
@@ -105,6 +105,16 @@ describe("dynamic suggestions protect the merchant", () => {
     ];
     const s = labels(buildSuggestions({ turns, state: state(), skills: allOn }));
     assert.deepEqual(s.slice(0, 2), ["Yes, cancel it", "No, keep my subscription"]);
+  });
+
+  it("give a one-tap way to take the offer when one is on the table at the cancellation step", () => {
+    const turns: Turn[] = [
+      { role: "user", text: "cancel it" },
+      { role: "agent", text: "confirm?", events: [{ type: "tool_result", name: "cancel_subscription", result: { status: "needs_confirmation", offer: "20% off" } }] },
+    ];
+    const s = buildSuggestions({ turns, state: state(), skills: allOn });
+    assert.deepEqual(labels(s).slice(0, 2), ["Yes, cancel it", "Keep it, I'd like the offer"]);
+    assert.match(s[1].text, /^Keep it/);
   });
 
   it("lead with an update question while a request is with the merchant", () => {

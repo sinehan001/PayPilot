@@ -34,6 +34,12 @@ create table if not exists proposals(
   args text not null, turn integer not null, status text not null, created_at text not null);
 `);
 
+// Migration: a retention offer is shown at most once per cancellation request.
+{
+  const cols = db.prepare("pragma table_info(proposals)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "offer_shown")) db.exec("alter table proposals add column offer_shown integer not null default 0");
+}
+
 // Migration: every approval remembers which conversation it came from and why the merchant decided as they did.
 for (const col of ["decision_reason", "conversation_id"]) {
   const cols = db.prepare("pragma table_info(approvals)").all() as { name: string }[];

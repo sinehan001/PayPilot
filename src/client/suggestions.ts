@@ -50,10 +50,13 @@ export function buildSuggestions(opts: { turns: Turn[]; state: State | null; ski
   const lastWrite = lastAgent?.events ? [...lastAgent.events].reverse().find((e) => e.type === "tool_result" && WRITE_TOOLS.includes(e.name)) : undefined;
   if (lastWrite?.type === "tool_result" && lastWrite.result.status === "needs_confirmation") {
     const cancelling = lastWrite.name === "cancel_subscription";
+    const offerOnTable = Boolean(lastWrite.result.offer);
     return cancelling
       ? [
           { label: "Yes, cancel it", text: "Yes, cancel it." },
-          { label: "No, keep my subscription", text: "No, keep my subscription." },
+          offerOnTable
+            ? { label: "Keep it, I'd like the offer", text: "Keep it, I'd like the offer." }
+            : { label: "No, keep my subscription", text: "No, keep my subscription." },
           { label: "What exactly will happen?", text: "What exactly will happen if I cancel?" },
         ]
       : [

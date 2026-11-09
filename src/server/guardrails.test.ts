@@ -337,11 +337,67 @@ describe("guardrails", () => {
       const { first, second } = await askToCancel("20% off for 3 months if you stay");
       assert.equal(first.status, "needs_confirmation");
       assert.equal(first.offer, "20% off for 3 months if you stay");
-      assert.match(first.message, /ONCE/);
       assert.match(first.message, /keep it/);
+      // The pitch is built from this customer's real subscription, not invented.
+      assert.equal(first.retention.product, "CloudNotes Pro");
+      assert.equal(first.retention.price, "$4.99");
+      assert.ok(first.retention.member_days > 0);
+      assert.match(first.message, /ONLY these facts/);
       // It never blocked anything: one "yes" and the subscription is cancelled.
       assert.equal(second.status, "ok");
       assert.equal(store.getSubscription("S-1002")?.status, "CANCELLED");
+    });
+
+    it("the offer is shown ONCE per cancellation: a repeat gets no second pitch", async () => {
+      fresh();
+      policy.setPolicy({ ...policy.DEFAULT_POLICY, retentionOffer: "20% off for 3 months if you stay" });
+      const c = conv.createConversation();
+      const seen = [{ role: "user" as const, parts: [{ functionResponse: { name: "list_charges", response: { result: { status: "ok", data: { charges: [], subscriptions: [{ id: "S-1002" }] } } } } }] }];
+      const args = { subscription_id: "S-1002", reason: "customer asked to cancel" };
+      const call = () => tools.callTool("cancel_subscription", args, { ...ctx, conversationId: c.id, userMessage: "why does it renew?", history: seen });
+      conv.addMessage(c.id, { role: "user", text: "please cancel CloudNotes" });
+      const first: any = await call();
+      conv.addMessage(c.id, { role: "user", text: "why does it renew?" });
+      const again: any = await call();
+      assert.ok(first.offer, "first time: the offer is shown");
+      assert.equal(again.status, "needs_confirmation");
+      assert.equal(again.offer, undefined, "second time: no second pitch");
+      assert.equal(again.retention, undefined);
+    });
+
+    it("the merchant's own 'why customers stay' line is passed to the AI as a fact", async () => {
+      fresh();
+      policy.setPolicy({ ...policy.DEFAULT_POLICY, retentionOffer: "10% off", retentionPitch: "CloudNotes Pro includes unlimited sync" });
+      const c = conv.createConversation();
+      const seen = [{ role: "user" as const, parts: [{ functionResponse: { name: "list_charges", response: { result: { status: "ok", data: { charges: [], subscriptions: [{ id: "S-1002" }] } } } } }] }];
+      conv.addMessage(c.id, { role: "user", text: "cancel CloudNotes" });
+      const r: any = await tools.callTool("cancel_subscription", { subscription_id: "S-1002", reason: "customer asked to cancel" }, { ...ctx, conversationId: c.id, userMessage: "cancel CloudNotes", history: seen });
+      assert.equal(r.retention.pitch, "CloudNotes Pro includes unlimited sync");
+      assert.match(r.message, /unlimited sync/);
+    });
+
+    it("a refund is never met with a retention pitch: that moment belongs to cancelling only", async () => {
+      fresh();
+      policy.setPolicy({ ...policy.DEFAULT_POLICY, retentionOffer: "20% off for 3 months if you stay" });
+      const c = conv.createConversation();
+      const seen = [{ role: "user" as const, parts: [{ functionResponse: { name: "list_charges", response: { result: { status: "ok", data: { charges: [{ id: "C-2004" }], subscriptions: [] } } } } }] }];
+      conv.addMessage(c.id, { role: "user", text: "refund the 89" });
+      const r: any = await tools.callTool("request_refund", { charge_id: "C-2004", amount: 89, reason: "does not recognise it" }, { ...ctx, conversationId: c.id, userMessage: "refund the 89", history: seen });
+      assert.equal(r.status, "needs_confirmation");
+      assert.equal(r.offer, undefined);
+      assert.equal(r.retention, undefined);
+    });
+
+    it("scripted AI sounds like a person: names the product and the offer, never the instructions", async () => {
+      fresh();
+      policy.setPolicy({ ...policy.DEFAULT_POLICY, retentionOffer: "20% off for the next 3 months", retentionPitch: "Most of our members keep it for the unlimited sync." });
+      const out = await agent.runAgent({ conversationId: conv.createConversation().id, message: "Please cancel CloudNotes.", customer: ctx.customer, llm: llm.mockLLM() });
+      assert.match(out.reply, /sorry to hear you're thinking about leaving CloudNotes Pro/);
+      assert.match(out.reply, /20% off for the next 3 months/);
+      assert.match(out.reply, /unlimited sync/);
+      assert.match(out.reply, /keep it/);
+      assert.doesNotMatch(out.reply, /no pressure|mention (this|it) once|customers who are leaving/i);
+      assert.equal(store.getSubscription("S-1002")?.status, "ACTIVE", "the pitch never cancels or blocks anything");
     });
 
     it("no offer is mentioned when the merchant has not set one", async () => {

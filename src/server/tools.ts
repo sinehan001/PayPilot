@@ -7,7 +7,7 @@ import * as store from "./store.ts";
 import { paypalConfigured } from "./paypal.ts";
 import { ppCancelSubscription, ppRefundCapture } from "./paypalOps.ts";
 import { addMessage } from "./conversations.ts";
-import { customerSkillSummary, gate, isSkillEnabled, skillForTool, type CheckResult } from "./skills.ts";
+import { customerSkillSummary, gate, isSkillEnabled, skillForTool, type CheckResult, type RetentionContext } from "./skills.ts";
 import type { Content } from "./llm.ts";
 
 export interface ToolCtx {
@@ -26,7 +26,14 @@ export interface ToolCtx {
 export type ToolResult = (
   | { status: "ok"; data: unknown }
   | { status: "pending_approval"; approvalId: string; message: string }
-  | { status: "needs_confirmation"; message: string; summary: string; proposal: { tool: string; args: Record<string, unknown> }; offer?: string }
+  | {
+      status: "needs_confirmation";
+      message: string;
+      summary: string;
+      proposal: { tool: string; args: Record<string, unknown> };
+      offer?: string;
+      retention?: RetentionContext;
+    }
   | { status: "denied"; reason: string }
   | { status: "error"; message: string }
 ) & { checks?: CheckResult[] };
@@ -347,6 +354,31 @@ export async function decideApproval(id: string, approve: boolean, opts: { reaso
   return result;
 }
 
+/**
+ * What the AI is told when a customer is about to cancel and the merchant has an offer. It is the one moment to try, warmly, to keep
+ * them. The guidance insists on true facts, a human voice, an easy exit, and honesty about who applies the offer.
+ */
+function retentionGuidance(summary: string, r: RetentionContext): string {
+  const facts = [
+    `they pay ${r.price} ${r.interval}`,
+    `they have been with ${store.MERCHANT} since ${r.member_since} (${r.member_days} days)`,
+    ...(r.next_charge ? [`their next charge is ${r.next_charge}`] : []),
+    ...(r.pitch ? [`${store.MERCHANT} says: "${r.pitch}"`] : []),
+  ].join("; ");
+  return [
+    `Ask the customer to confirm: ${summary}.`,
+    `This customer is about to leave, so this is the one moment to try, warmly, to keep them. Write it the way a caring person would, in 3 or 4 short sentences, not like a script:`,
+    `(1) a genuine, brief sorry that they are thinking of leaving ${r.product};`,
+    `(2) one or two TRUE reasons to stay, using ONLY these facts: ${facts}. Never invent benefits or features;`,
+    `(3) say ${store.MERCHANT} can do this for them if they stay: "${r.offer}". Say it naturally, as something for them;`,
+    `(4) make the choice easy: reply "keep it" to stay, or "yes" to cancel right now.`,
+    `Never pressure, guilt-trip or repeat yourself. If they still want to cancel, do it straight away.`,
+    `Do not describe these instructions and do not use phrases like "offer for customers who are leaving", "I'll mention this once" or "no pressure".`,
+    `You cannot apply the offer yourself. If they say keep it, call request_human_help (topic: they chose to stay and want "${r.offer}" on ${r.product}) and tell them a person will reply here. Never say the offer was applied.`,
+    `Do nothing until they reply yes.`,
+  ].join(" ");
+}
+
 /** Validate args with zod, run the tool, and audit every call and result. */
 export async function callTool(name: string, rawArgs: unknown, ctx: ToolCtx): Promise<ToolResult> {
   const tool = tools.find((t) => t.name === name);
@@ -382,8 +414,9 @@ export async function callTool(name: string, rawArgs: unknown, ctx: ToolCtx): Pr
         summary: g.summary,
         proposal: g.proposal,
         offer: g.offer,
-        message: g.offer
-          ? `Ask the customer to confirm: ${g.summary}. ${store.MERCHANT} has an offer for customers who are leaving: "${g.offer}". Mention it ONCE, in one neutral sentence, then make the choice clear: reply "yes" to cancel, or "keep it" to stay. Do not describe these instructions to the customer (never say things like "I'll mention this once" or "with no pressure"). Do nothing until they reply yes. If they say keep it: you CANNOT apply the offer yourself, so call request_human_help (topic: they chose to stay and want the offer "${g.offer}") and tell them you have not changed anything and a person will reply here. Never say the offer was applied.`
+        retention: g.retention,
+        message: g.retention
+          ? retentionGuidance(g.summary, g.retention)
           : `Ask the customer to confirm: ${g.summary}. Do nothing until they reply yes.`,
         checks,
       };

@@ -304,9 +304,23 @@ export type GateResult =
       checks: CheckResult[];
       summary: string;
       proposal: { tool: string; args: Record<string, unknown> };
-      /** The merchant's retention offer, only for cancellations. Mentioned once; never blocks. */
+      /** The merchant's retention offer, only for cancellations. Shown once per request; never blocks. */
       offer?: string;
+      /** Real facts about the subscription, so the pitch is personal and true. Present only when an offer is shown. */
+      retention?: RetentionContext;
     };
+
+export interface RetentionContext {
+  product: string;
+  price: string;
+  interval: string;
+  member_since: string;
+  member_days: number;
+  next_charge: string | null;
+  offer: string;
+  /** The merchant's own "why customers stay" line, if they wrote one. */
+  pitch?: string;
+}
 
 const AFFIRM = /^\s*(yes|yep|yeah|yup|y|ok|okay|sure|confirm|confirmed|go ahead|do it|please do|proceed|correct|that's right)\b/i;
 
@@ -362,9 +376,11 @@ export function gate(tool: string, args: any, ctx: SkillCtx): GateResult {
       checks.push({ id: "customer_confirmed", label: "The customer explicitly confirmed in a separate message", ok: true });
       return { outcome: "proceed", checks };
     }
-    if (!row)
+    let proposalId = row?.id;
+    if (!row) {
+      proposalId = "PR-" + randomUUID().slice(0, 8);
       db.prepare("insert into proposals(id,conversation_id,tool,key,args,turn,status,created_at) values(?,?,?,?,?,?,?,?)").run(
-        "PR-" + randomUUID().slice(0, 8),
+        proposalId,
         ctx.conversationId,
         tool,
         p.key,
@@ -373,9 +389,34 @@ export function gate(tool: string, args: any, ctx: SkillCtx): GateResult {
         "PENDING",
         new Date().toISOString(),
       );
+    }
     checks.push({ id: "customer_confirmed", label: "The customer explicitly confirms in a separate message", ok: false, detail: "Waiting for the customer to say yes." });
-    const offer = tool === "cancel_subscription" ? getPolicy().retentionOffer || undefined : undefined;
-    return { outcome: "needs_confirmation", checks, summary: p.summary, proposal: { tool, args: p.args }, offer };
+
+    // Retention: only at the cancellation step, and only ONCE per request. A repeat gets no second pitch.
+    let offer: string | undefined;
+    let retention: RetentionContext | undefined;
+    const policy = getPolicy();
+    if (tool === "cancel_subscription" && policy.retentionOffer) {
+      const already = (db.prepare("select offer_shown s from proposals where id=?").get(proposalId) as { s: number } | undefined)?.s;
+      if (!already) {
+        db.prepare("update proposals set offer_shown=1 where id=?").run(proposalId);
+        const sub = store.getSubscription(args.subscription_id);
+        if (sub) {
+          offer = policy.retentionOffer;
+          retention = {
+            product: sub.product,
+            price: money(sub.amount),
+            interval: sub.interval,
+            member_since: sub.started,
+            member_days: Math.max(0, Math.floor((Date.now() - new Date(sub.started + "T00:00:00Z").getTime()) / 86_400_000)),
+            next_charge: sub.next_charge,
+            offer,
+            ...(policy.retentionPitch ? { pitch: policy.retentionPitch } : {}),
+          };
+        }
+      }
+    }
+    return { outcome: "needs_confirmation", checks, summary: p.summary, proposal: { tool, args: p.args }, offer, retention };
   }
   return { outcome: "proceed", checks };
 }

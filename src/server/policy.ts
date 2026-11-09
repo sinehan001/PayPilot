@@ -18,6 +18,11 @@ export const PolicySchema = z.object({
    * It is mentioned once and never blocks or delays the cancellation. Empty means no offer.
    */
   retentionOffer: z.string().trim().max(200).default(""),
+  /**
+   * Optional: one or two true sentences about why customers stay, for example "FitTrack includes unlimited workouts and a
+   * free coaching call". The AI may use these as facts when a customer is about to cancel. It never invents benefits.
+   */
+  retentionPitch: z.string().trim().max(240).default(""),
 });
 export type Policy = z.infer<typeof PolicySchema>;
 
@@ -28,6 +33,7 @@ export const DEFAULT_POLICY: Policy = {
   dailyRefundCap: 50,
   allowCustomerCancel: true,
   retentionOffer: "",
+  retentionPitch: "",
 };
 
 export function getPolicy(): Policy {

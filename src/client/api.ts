@@ -34,8 +34,10 @@ export interface Policy {
   refundWindowDays: number;
   dailyRefundCap: number;
   allowCustomerCancel: boolean;
-  /** Optional one-line offer shown once to a customer who has already asked to cancel. */
+  /** Optional one-line offer shown once, at the cancellation step only. */
   retentionOffer: string;
+  /** Optional true line about why customers stay. The AI may use it as a fact when someone is about to cancel. */
+  retentionPitch: string;
 }
 export interface State {
   subscriptions: Subscription[];
@@ -106,7 +108,7 @@ export interface StoredMessage {
 }
 export type AgentEvent =
   | { type: "tool_call"; name: string; args: unknown; kind: "read" | "write" }
-  | { type: "tool_result"; name: string; result: { status: string; reason?: string; message?: string; summary?: string; checks?: CheckResult[] } }
+  | { type: "tool_result"; name: string; result: { status: string; reason?: string; message?: string; summary?: string; checks?: CheckResult[]; offer?: string } }
   | { type: "message"; text: string };
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {

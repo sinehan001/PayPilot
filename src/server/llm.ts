@@ -133,7 +133,8 @@ export function nvidiaLLM(apiKey: string, model: string, baseUrl = "https://inte
         })),
         tool_choice: "auto",
         temperature: 0.2,
-        max_tokens: 700,
+        // Reasoning models spend part of this budget "thinking" before they answer, so keep it generous.
+        max_tokens: Number(process.env.NVIDIA_MAX_TOKENS ?? 2500),
       };
       const res = await fetch(`${baseUrl}/chat/completions`, {
         method: "POST",
@@ -146,6 +147,9 @@ export function nvidiaLLM(apiKey: string, model: string, baseUrl = "https://inte
       if (!res.ok) throw new Error(`NVIDIA request failed: ${res.status} ${(await res.text()).slice(0, 200)}`);
       const json: any = await res.json();
       const msg = json.choices?.[0]?.message;
+      // A reply that hit the token limit is cut off mid-sentence: never show that to a customer. Let the chain try the next model.
+      if (json.choices?.[0]?.finish_reason === "length" && !msg?.tool_calls?.length)
+        throw new Error(`NVIDIA ${model} reply was cut off at the token limit`);
       const parts: Part[] = [];
       if (msg?.content) parts.push({ text: String(msg.content) });
       for (const tc of msg?.tool_calls ?? []) {
@@ -311,8 +315,16 @@ export function mockLLM(): LLM {
         if (r.status === "needs_confirmation")
           return [
             {
-              text: r.offer
-                ? `Before I cancel, one thing: ${r.offer} If you'd rather stay, just say "keep it". To go ahead and ${r.summary.toLowerCase()}, reply "yes".`
+              text: r.retention
+                ? [
+                    `I'm sorry to hear you're thinking about leaving ${r.retention.product}.`,
+                    `You've been with us since ${r.retention.member_since}, at ${r.retention.price} ${r.retention.interval}.`,
+                    r.retention.pitch ? r.retention.pitch : "",
+                    `If you'd like to stay, Acme Digital can do this for you: ${r.retention.offer}.`,
+                    `Just say "keep it" and I'll pass that on to the team. Or, if you'd rather go ahead, reply "yes" and I'll cancel it right now.`,
+                  ]
+                    .filter(Boolean)
+                    .join(" ")
                 : `Before I do this, please confirm: ${r.summary}. Reply "yes" and I'll go ahead.`,
             },
           ];
