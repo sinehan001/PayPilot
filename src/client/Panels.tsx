@@ -85,6 +85,12 @@ export function AccountPanel({ state }: { state: State }) {
 
 // ---------------------------------------------------------------------------------------------
 
+const QUICK_REPLIES = [
+  "Thanks for staying with us. We've applied your offer.",
+  "We're looking into this and will update you here today.",
+  "Thanks for flagging this. We've fixed it on our side.",
+];
+
 const QUICK_REASONS = [
   "Verified as a duplicate charge",
   "Service was not delivered as described",
@@ -119,6 +125,7 @@ export function ApprovalsPanel({ approvals, onDecided }: { approvals: Approval[]
 
   const describe = (a: Approval) => {
     const p = JSON.parse(a.payload);
+    if (a.kind === "handoff") return `Customer needs a person: ${p.topic}`;
     return a.kind === "refund" ? `Refund ${money(p.amount)}: ${p.description}` : `Cancel ${p.product}`;
   };
 
@@ -131,24 +138,26 @@ export function ApprovalsPanel({ approvals, onDecided }: { approvals: Approval[]
       {pending.map((a) => (
         <div key={a.id} className="rounded-xl border-2 border-amber-300 bg-amber-50/60 p-4">
           <div className="flex items-center justify-between">
-            <Badge tone="amber">Needs your approval</Badge>
+            <Badge tone="amber">{a.kind === "handoff" ? "Customer needs a person" : "Needs your approval"}</Badge>
             <span className="text-xs text-muted">{a.id}</span>
           </div>
           <p className="mt-2 text-sm font-semibold">{describe(a)}</p>
-          <p className="mt-1 text-sm text-muted">{a.reason}</p>
+          {a.kind !== "handoff" && <p className="mt-1 text-sm text-muted">{a.reason}</p>}
           <label className="mt-3 block">
-            <span className="text-xs font-semibold uppercase tracking-wide text-muted">Your reason (the customer will see this)</span>
+            <span className="text-xs font-semibold uppercase tracking-wide text-muted">
+              {a.kind === "handoff" ? "Your reply (appears in the customer's chat)" : "Your reason (the customer will see this)"}
+            </span>
             <textarea
               rows={2}
               maxLength={300}
               value={reasons[a.id] ?? ""}
               onChange={(e) => setReasons((r) => ({ ...r, [a.id]: e.target.value }))}
-              placeholder="Explain your decision in a sentence or two"
+              placeholder={a.kind === "handoff" ? "Write your reply to the customer" : "Explain your decision in a sentence or two"}
               className="mt-1 w-full resize-none rounded-lg border border-line bg-white px-3 py-2 text-base sm:text-sm"
             />
           </label>
           <div className="mt-2 flex flex-wrap gap-1.5" aria-label="Quick reasons">
-            {QUICK_REASONS.map((q) => (
+            {(a.kind === "handoff" ? QUICK_REPLIES : QUICK_REASONS).map((q) => (
               <button
                 key={q}
                 type="button"
@@ -165,16 +174,20 @@ export function ApprovalsPanel({ approvals, onDecided }: { approvals: Approval[]
               disabled={busy === a.id || (reasons[a.id] ?? "").trim().length < 3}
               className="min-h-11 rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-white hover:bg-accent-dark disabled:opacity-40"
             >
-              {busy === a.id ? "Working..." : "Approve"}
+              {busy === a.id ? "Working..." : a.kind === "handoff" ? "Send reply" : "Approve"}
             </button>
-            <button
-              onClick={() => decide(a.id, "reject")}
-              disabled={busy === a.id || (reasons[a.id] ?? "").trim().length < 3}
-              className="min-h-11 rounded-lg border border-line bg-white px-5 py-2 text-sm font-semibold text-ink hover:border-slate-400 disabled:opacity-40"
-            >
-              Reject
-            </button>
-            {(reasons[a.id] ?? "").trim().length < 3 && <span className="text-xs text-muted">Add a reason to approve or reject.</span>}
+            {a.kind !== "handoff" && (
+              <button
+                onClick={() => decide(a.id, "reject")}
+                disabled={busy === a.id || (reasons[a.id] ?? "").trim().length < 3}
+                className="min-h-11 rounded-lg border border-line bg-white px-5 py-2 text-sm font-semibold text-ink hover:border-slate-400 disabled:opacity-40"
+              >
+                Reject
+              </button>
+            )}
+            {(reasons[a.id] ?? "").trim().length < 3 && (
+              <span className="text-xs text-muted">{a.kind === "handoff" ? "Write a reply to send." : "Add a reason to approve or reject."}</span>
+            )}
           </div>
         </div>
       ))}
@@ -186,9 +199,16 @@ export function ApprovalsPanel({ approvals, onDecided }: { approvals: Approval[]
               <li key={a.id} className="px-4 py-3 text-sm">
                 <div className="flex items-center justify-between gap-3">
                   <span className="min-w-0 truncate">{describe(a)}</span>
-                  <Badge tone={a.status === "APPROVED" ? "green" : "gray"}>{a.status === "APPROVED" ? "Approved" : "Rejected"}</Badge>
+                  <Badge tone={a.status === "APPROVED" ? "green" : "gray"}>
+                    {a.kind === "handoff" ? "Replied" : a.status === "APPROVED" ? "Approved" : "Rejected"}
+                  </Badge>
                 </div>
-                {a.decision_reason && <p className="mt-1 text-xs text-muted">Reason given to the customer: {a.decision_reason}</p>}
+                {a.decision_reason && (
+                  <p className="mt-1 text-xs text-muted">
+                    {a.kind === "handoff" ? "Your reply: " : "Reason given to the customer: "}
+                    {a.decision_reason}
+                  </p>
+                )}
               </li>
             ))}
           </ul>
@@ -312,6 +332,21 @@ export function PolicyPanel({ policy, onSaved }: { policy: Policy; onSaved: () =
           className="h-5 w-5 accent-[var(--color-accent)]"
         />
       </label>
+      <label className="block">
+        <span className="text-sm font-medium">Offer for customers who ask to cancel (optional)</span>
+        <span className="mt-0.5 block text-xs text-muted">
+          Shown once, in one neutral sentence, only after the customer has already asked to cancel. It never blocks or delays the cancellation.
+          The AI never brings up cancelling or refunds on its own.
+        </span>
+        <input
+          type="text"
+          maxLength={200}
+          value={p.retentionOffer ?? ""}
+          onChange={(e) => setP({ ...p, retentionOffer: e.target.value })}
+          placeholder="For example: 20% off your next 3 months if you stay"
+          className="mt-1.5 w-full rounded-lg border border-line bg-white px-3 py-2.5 text-base sm:text-sm"
+        />
+      </label>
       <div className="flex items-center gap-3">
         <button onClick={save} className="min-h-11 rounded-lg bg-accent px-5 py-2 text-sm font-semibold text-white hover:bg-accent-dark">
           Save policy
@@ -349,14 +384,16 @@ export function RequestsPanel({ approvals }: { approvals: Approval[] }) {
             <li key={a.id} className="rounded-xl border border-line bg-white p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <p className="text-sm font-semibold">{a.kind === "refund" ? `Refund ${money(p.amount)}` : "Cancellation"}</p>
-                  <p className="truncate text-sm text-muted">{a.kind === "refund" ? p.description : p.product}</p>
+                  <p className="text-sm font-semibold">
+                    {a.kind === "handoff" ? "Request for a person" : a.kind === "refund" ? `Refund ${money(p.amount)}` : "Cancellation"}
+                  </p>
+                  <p className="truncate text-sm text-muted">{a.kind === "handoff" ? p.topic : a.kind === "refund" ? p.description : p.product}</p>
                 </div>
-                <Badge tone={s.tone}>{s.text}</Badge>
+                <Badge tone={s.tone}>{a.kind === "handoff" && a.status === "APPROVED" ? "Replied" : s.text}</Badge>
               </div>
               {a.status !== "PENDING" && a.decision_reason && (
                 <p className="mt-2 rounded-lg bg-surface px-3 py-2 text-sm">
-                  <span className="font-semibold">Reason from Acme Digital: </span>
+                  <span className="font-semibold">{a.kind === "handoff" ? "Reply from Acme Digital: " : "Reason from Acme Digital: "}</span>
                   {a.decision_reason}
                 </p>
               )}

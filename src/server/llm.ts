@@ -224,8 +224,30 @@ export function mockLLM(): LLM {
       if (res.length === 0 && proposal && /^\s*(yes|yep|yeah|yup|y|ok|okay|sure|confirm|confirmed|go ahead|do it|please do|proceed)\b/.test(msg))
         return [{ functionCall: { name: proposal.tool, args: proposal.args } }];
 
+      // A real person: ask for one, and only promise a reply once the tool has succeeded.
+      const handoff = res.find((r) => r.name === "request_human_help")?.response?.result;
+      if (handoff) {
+        if (handoff.status !== "ok") return [{ text: "I couldn't reach a person just now, and nothing was changed. Please try again in a moment." }];
+        return [
+          {
+            text: `I've asked a person at Acme Digital to follow up (reference ${handoff.data.reference}). They'll reply right here in this chat. I haven't changed anything on your account myself.`,
+          },
+        ];
+      }
+      const wantsPerson = /\b(speak|talk|chat) (to|with) (a |an )?(person|human|someone|somebody|agent|representative|manager)\b|\breal person\b|\bhuman (agent|being)\b/.test(msg);
+      const keepIt = /^\s*keep it\b/.test(msg) && proposal?.tool === "cancel_subscription";
+      if (res.length === 0 && (wantsPerson || keepIt))
+        return [
+          {
+            functionCall: {
+              name: "request_human_help",
+              args: { topic: keepIt ? "The customer chose to stay and would like the merchant's offer applied to their subscription." : `The customer asked to speak to a person: "${text.slice(0, 200)}"` },
+            },
+          },
+        ];
+
       // A plain "no" to a proposal: change nothing.
-      if (/^\s*(no|nope|nah|never ?mind)\b/.test(msg)) return [{ text: "No problem. I won't change anything. Is there anything else I can help with?" }];
+      if (/^\s*(no|nope|nah|never ?mind|keep (it|my))\b/.test(msg)) return [{ text: "No problem. I won't change anything. Is there anything else I can help with?" }];
 
       // "What can you do?", venting, or anything outside billing: answer from the real skills tool.
       const billingWords = /(refund|money back|cancel|charge|charged|\$|\d|payment|subscription|invoice|bill|renew|stream|cloud|fit|update|status|what happened)/.test(msg);
@@ -286,7 +308,14 @@ export function mockLLM(): LLM {
 
       if (last.name === "cancel_subscription" || last.name === "request_refund") {
         const r = last.response.result;
-        if (r.status === "needs_confirmation") return [{ text: `Before I do this, please confirm: ${r.summary}. Reply "yes" and I'll go ahead.` }];
+        if (r.status === "needs_confirmation")
+          return [
+            {
+              text: r.offer
+                ? `Before I cancel, one thing: ${r.offer} If you'd rather stay, just say "keep it". To go ahead and ${r.summary.toLowerCase()}, reply "yes".`
+                : `Before I do this, please confirm: ${r.summary}. Reply "yes" and I'll go ahead.`,
+            },
+          ];
         if (r.status === "ok") return [{ text: last.name === "cancel_subscription" ? "Done. Your subscription is cancelled and won't renew." : `Done. Your refund of ${money(r.data.amount)} was approved and issued.` }];
         if (r.status === "pending_approval") return [{ text: `I've sent this for approval (ref ${r.approvalId}). ${r.message} You'll hear back once it's reviewed.` }];
         if (r.status === "denied") return [{ text: `I can't do that: ${r.reason}` }];
@@ -300,7 +329,7 @@ export function mockLLM(): LLM {
         const renew = s?.next_charge ? ` It renews next on ${s.next_charge}${s.interval === "monthly" ? `, about ${money(s.amount * 12)} per year` : ""}.` : "";
         return `${money(c.amount)} on ${c.date} was ${c.description}${s ? ` (subscription ${s.id}, ${s.status.toLowerCase()})` : ""}.${renew}`;
       });
-      return [{ text: lines.join("\n") + "\nWant me to cancel it or request a refund?" }];
+      return [{ text: lines.join("\n") + "\nIs there anything else I can help with?" }];
   };
 
   return {

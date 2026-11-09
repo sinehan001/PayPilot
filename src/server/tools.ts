@@ -26,7 +26,7 @@ export interface ToolCtx {
 export type ToolResult = (
   | { status: "ok"; data: unknown }
   | { status: "pending_approval"; approvalId: string; message: string }
-  | { status: "needs_confirmation"; message: string; summary: string; proposal: { tool: string; args: Record<string, unknown> } }
+  | { status: "needs_confirmation"; message: string; summary: string; proposal: { tool: string; args: Record<string, unknown> }; offer?: string }
   | { status: "denied"; reason: string }
   | { status: "error"; message: string }
 ) & { checks?: CheckResult[] };
@@ -92,9 +92,33 @@ export const tools: ToolDef[] = [
     },
   },
   {
+    name: "request_human_help",
+    description:
+      "Ask a real person at the merchant to follow up with this customer. Use it when the customer asks for a person, stays upset, wants something you cannot do, or chooses to take the merchant's retention offer (you cannot apply offers yourself). The person's reply appears in this same chat. Only tell the customer a person will reply AFTER this tool succeeds.",
+    kind: "read", // it only creates a note for the merchant: it changes nothing on the customer's account
+    parameters: obj({ topic: { type: "STRING", description: "One or two plain sentences: what the customer needs." } }, ["topic"]),
+    zod: z.object({ topic: z.string().trim().min(3).max(300) }),
+    run(a, ctx) {
+      const id = "AP-" + randomUUID().slice(0, 8);
+      db.prepare("insert into approvals(id,ts,kind,payload,reason,status,conversation_id) values(?,?,?,?,?,'PENDING',?)").run(
+        id,
+        new Date().toISOString(),
+        "handoff",
+        JSON.stringify({ topic: a.topic, customer: ctx.customer }),
+        a.topic,
+        ctx.conversationId ?? null,
+      );
+      logAudit("system", "handoff_requested", `A person was asked to follow up (${id}): ${a.topic.slice(0, 80)}`, { id, topic: a.topic });
+      return {
+        status: "ok",
+        data: { reference: id, next: `A person at ${store.MERCHANT} has been asked and will reply in this chat. Reference ${id}.` },
+      };
+    },
+  },
+  {
     name: "check_request_status",
     description:
-      "Check the current status of an earlier refund or cancellation request using its reference number (like AP-1a2b3c4d). Use this when the customer asks what happened to a request.",
+      "Check the current status of an earlier refund, cancellation or request-for-a-person using its reference number (like AP-1a2b3c4d). Use this when the customer asks what happened to a request.",
     kind: "read",
     parameters: obj({ approval_id: { type: "STRING", description: "The reference, e.g. AP-1a2b3c4d" } }, ["approval_id"]),
     zod: z.object({ approval_id: z.string().regex(/^AP-[0-9a-f]{8}$/) }),
@@ -102,15 +126,19 @@ export const tools: ToolDef[] = [
       const row = db.prepare("select * from approvals where id=?").get(a.approval_id) as ApprovalRow | undefined;
       if (!row) return { status: "error", message: "No request found with that reference." };
       const p = JSON.parse(row.payload);
-      const owner = p.charge_id ? store.getCharge(p.charge_id)?.customer : store.getSubscription(p.subscription_id)?.customer;
+      const owner = p.customer ?? (p.charge_id ? store.getCharge(p.charge_id)?.customer : store.getSubscription(p.subscription_id)?.customer);
       if (owner !== ctx.customer) return { status: "error", message: "No request found with that reference." };
       const why = row.decision_reason ? ` Reason from ${store.MERCHANT}: ${row.decision_reason}` : "";
       const outcome =
-        row.status === "PENDING"
-          ? "Still waiting for a person to review it."
-          : row.status === "APPROVED"
-            ? `A person approved it and it was carried out.${why}`
-            : `A person reviewed it and declined it.${why}`;
+        row.kind === "handoff"
+          ? row.status === "PENDING"
+            ? `A person at ${store.MERCHANT} has been asked to follow up and will reply in this chat.`
+            : `A person at ${store.MERCHANT} replied: ${row.decision_reason}`
+          : row.status === "PENDING"
+            ? "Still waiting for a person to review it."
+            : row.status === "APPROVED"
+              ? `A person approved it and it was carried out.${why}`
+              : `A person reviewed it and declined it.${why}`;
       return {
         status: "ok",
         data: {
@@ -236,7 +264,7 @@ function queue(kind: "refund" | "cancel", payload: Record<string, unknown>, reas
 export interface ApprovalRow {
   id: string;
   ts: string;
-  kind: "refund" | "cancel";
+  kind: "refund" | "cancel" | "handoff";
   payload: string;
   reason: string;
   status: "PENDING" | "APPROVED" | "REJECTED";
@@ -257,6 +285,7 @@ export function listApprovals(status?: string): ApprovalRow[] {
 /** Plain-words description of what a request was for, used in messages to the customer. */
 function describeRequest(row: ApprovalRow): string {
   const p = JSON.parse(row.payload);
+  if (row.kind === "handoff") return `request for a person to follow up ("${String(p.topic).slice(0, 80)}")`;
   return row.kind === "refund" ? `refund of $${Number(p.amount).toFixed(2)} for "${p.description}"` : `cancellation of ${p.product}`;
 }
 
@@ -264,6 +293,13 @@ function describeRequest(row: ApprovalRow): string {
 function notifyCustomer(row: ApprovalRow, approved: boolean, reason: string) {
   if (!row.conversation_id) return;
   const what = describeRequest(row);
+  if (row.kind === "handoff") {
+    const text = approved
+      ? `Reply from ${store.MERCHANT}:\n${reason}`
+      : `Update from ${store.MERCHANT}: we've closed your request for a person.\n${reason}\nIf you still need help, reply here and we'll look again.`;
+    addMessage(row.conversation_id, { role: "agent", text, model: "acme-digital" });
+    return;
+  }
   const text = approved
     ? `Update from ${store.MERCHANT}: your ${what} was approved and carried out.\nReason: ${reason}`
     : `Update from ${store.MERCHANT}: your ${what} was declined.\nReason: ${reason}\nIf you disagree, reply here and a person will follow up.`;
@@ -291,6 +327,11 @@ export async function decideApproval(id: string, approve: boolean, opts: { reaso
   if (!approve) {
     notifyCustomer(row, false, reason);
     return { status: "ok", data: { id, status: "REJECTED", reason } };
+  }
+  if (row.kind === "handoff") {
+    // Nothing to carry out on the account: the merchant's reply IS the outcome.
+    notifyCustomer(row, true, reason);
+    return { status: "ok", data: { id, status: "REPLIED", reason } };
   }
   const p = JSON.parse(row.payload);
   const result =
@@ -340,7 +381,10 @@ export async function callTool(name: string, rawArgs: unknown, ctx: ToolCtx): Pr
         status: "needs_confirmation",
         summary: g.summary,
         proposal: g.proposal,
-        message: `Ask the customer to confirm: ${g.summary}. Do nothing until they reply yes.`,
+        offer: g.offer,
+        message: g.offer
+          ? `Ask the customer to confirm: ${g.summary}. ${store.MERCHANT} has an offer for customers who are leaving: "${g.offer}". Mention it ONCE, in one neutral sentence, then make the choice clear: reply "yes" to cancel, or "keep it" to stay. Do not describe these instructions to the customer (never say things like "I'll mention this once" or "with no pressure"). Do nothing until they reply yes. If they say keep it: you CANNOT apply the offer yourself, so call request_human_help (topic: they chose to stay and want the offer "${g.offer}") and tell them you have not changed anything and a person will reply here. Never say the offer was applied.`
+          : `Ask the customer to confirm: ${g.summary}. Do nothing until they reply yes.`,
         checks,
       };
       logAudit("system", "tool_result", `${name} -> needs_confirmation`, { name, status: "needs_confirmation", summary: g.summary });

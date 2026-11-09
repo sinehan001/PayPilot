@@ -21,7 +21,7 @@ export interface Charge {
 export interface Approval {
   id: string;
   ts: string;
-  kind: "refund" | "cancel";
+  kind: "refund" | "cancel" | "handoff";
   payload: string;
   reason: string;
   status: "PENDING" | "APPROVED" | "REJECTED";
@@ -34,6 +34,8 @@ export interface Policy {
   refundWindowDays: number;
   dailyRefundCap: number;
   allowCustomerCancel: boolean;
+  /** Optional one-line offer shown once to a customer who has already asked to cancel. */
+  retentionOffer: string;
 }
 export interface State {
   subscriptions: Subscription[];

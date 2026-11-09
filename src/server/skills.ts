@@ -88,14 +88,15 @@ export const skills: Skill[] = [
     whenToUse: "Every message, especially when the customer is upset, rude, confused or asks for something outside billing.",
     kind: "conduct",
     locked: true,
-    tools: ["list_my_skills"],
+    tools: ["list_my_skills", "request_human_help"],
     playbook: [
       "Stay calm and kind even if the customer is angry, rude or scolding. Never argue, never insult, never be sarcastic, never lecture.",
       "Acknowledge the feeling in one short sentence (for example: I understand this is frustrating), then move straight to fixing the problem.",
       "Be honest and specific about what you can do. If the customer asks what you can do, or asks for something you cannot do, call list_my_skills and explain from its answer. Never invent abilities.",
       "Never promise a refund or any result. Explain that the merchant's policy and a person decide, and say what happens next.",
       "You only help with Acme Digital billing. For anything else, say so kindly and list what you can help with.",
-      "If the customer stays upset or needs something you cannot do, offer to have a person at Acme Digital follow up, and stop there.",
+      "If the customer asks for a person, stays upset, or needs something you cannot do, call request_human_help with a short topic. Only AFTER it succeeds, tell them a person at Acme Digital will reply right here in this chat, and give the reference.",
+      "You cannot apply discounts, credits or offers, change plans, or promise any result yourself. If the customer wants the merchant's offer, call request_human_help so a person can apply it, say you have NOT changed anything yourself, and never say an offer or discount was applied.",
     ],
     checks: [],
     requiresConfirmation: false,
@@ -273,9 +274,16 @@ export function customerSkillSummary() {
     refund_charge: `Which charge, why you want it back, and your yes to confirm. Refunds up to $${policy.autoRefundLimit.toFixed(0)} within ${policy.refundWindowDays} days can be quick; anything larger goes to a person at ${MERCHANT} who decides and tells you why.`,
   };
   return {
-    i_can_help_with: enabledSkills()
-      .filter((s) => s.kind !== "conduct")
-      .map((s) => ({ what: s.name, description: s.description, what_i_need_from_you: needs[s.id] ?? "Just ask." })),
+    i_can_help_with: [
+      ...enabledSkills()
+        .filter((s) => s.kind !== "conduct")
+        .map((s) => ({ what: s.name, description: s.description, what_i_need_from_you: needs[s.id] ?? "Just ask." })),
+      {
+        what: "Pass you to a person",
+        description: `Ask a person at ${MERCHANT} to follow up. They reply right here in this chat.`,
+        what_i_need_from_you: "Just say you'd like to speak to someone.",
+      },
+    ],
     i_cannot: [
       "Change your plan, price or payment method",
       "Promise a refund: the merchant's policy and a person decide, and you will be told the reason",
@@ -291,7 +299,14 @@ export function customerSkillSummary() {
 export type GateResult =
   | { outcome: "proceed"; checks: CheckResult[] }
   | { outcome: "denied"; reason: string; checks: CheckResult[] }
-  | { outcome: "needs_confirmation"; checks: CheckResult[]; summary: string; proposal: { tool: string; args: Record<string, unknown> } };
+  | {
+      outcome: "needs_confirmation";
+      checks: CheckResult[];
+      summary: string;
+      proposal: { tool: string; args: Record<string, unknown> };
+      /** The merchant's retention offer, only for cancellations. Mentioned once; never blocks. */
+      offer?: string;
+    };
 
 const AFFIRM = /^\s*(yes|yep|yeah|yup|y|ok|okay|sure|confirm|confirmed|go ahead|do it|please do|proceed|correct|that's right)\b/i;
 
@@ -359,7 +374,8 @@ export function gate(tool: string, args: any, ctx: SkillCtx): GateResult {
         new Date().toISOString(),
       );
     checks.push({ id: "customer_confirmed", label: "The customer explicitly confirms in a separate message", ok: false, detail: "Waiting for the customer to say yes." });
-    return { outcome: "needs_confirmation", checks, summary: p.summary, proposal: { tool, args: p.args } };
+    const offer = tool === "cancel_subscription" ? getPolicy().retentionOffer || undefined : undefined;
+    return { outcome: "needs_confirmation", checks, summary: p.summary, proposal: { tool, args: p.args }, offer };
   }
   return { outcome: "proceed", checks };
 }

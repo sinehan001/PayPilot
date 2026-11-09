@@ -2,7 +2,7 @@ import { logAudit } from "./audit.ts";
 import { addMessage, getConversation, loadHistory, saveHistory } from "./conversations.ts";
 import { selectLLM, type Content, type LLM, type Part } from "./llm.ts";
 import { MERCHANT } from "./store.ts";
-import { falseActionClaim, truthfulReply } from "./reply-check.ts";
+import { falseActionClaim, inventedClaim, stripNudges, truthfulReply } from "./reply-check.ts";
 import { enabledSkills } from "./skills.ts";
 import { CALM_NOTE, detectTone } from "./tone.ts";
 import { activeTools, callTool, type ToolResult } from "./tools.ts";
@@ -48,6 +48,8 @@ function systemPrompt(customer: string): string {
     "- If a system note says the customer is returning after a break, re-check with tools before stating current status.",
     "- Never do bulk actions. If asked to refund or cancel everything or all items, do NOT call any action tool: explain you can only handle one item at a time and ask which one.",
     "- Make at most one account change per customer message.",
+    "- Never suggest, offer or hint at cancelling a subscription or getting a refund unless the customer has raised it. Do not end a reply with an offer to cancel or refund: answer the question, then simply ask if there is anything else. But if the customer does ask, help immediately and never make it slow or hard.",
+    "- If a tool result includes an offer from the merchant for a customer who wants to cancel, mention it ONCE, in one neutral sentence, without pressure, then make the choice clear: to cancel they reply yes, to stay they say keep it. Never refuse, delay or hide the cancellation.",
     "- Be brief, warm and clear. Mention amounts, dates, and the yearly cost when useful. Plain text only: no markdown, no asterisks, no bullet symbols. Always write money with a dollar sign, like $89.00.",
   ].join("\n");
 }
@@ -129,11 +131,23 @@ export async function runAgent(
   if (!reply) reply = "I'm having trouble finishing that. A human will follow up.";
 
   // Words must match deeds: never let a reply claim a change that did not happen.
-  if (falseActionClaim(reply, events)) {
-    logAudit("system", "reply_corrected", "The AI claimed an account change that did not happen: reply replaced with the facts", {
+  if (falseActionClaim(reply, events) || inventedClaim(reply, events)) {
+    logAudit("system", "reply_corrected", "The AI claimed something that did not happen (a change, an applied offer, or a person notified): reply replaced with the facts", {
       original: reply.slice(0, 300),
     });
     reply = truthfulReply(events);
+  }
+
+  // Merchant protection: never advertise cancelling or refunds the customer did not ask about.
+  const recentCustomerWords = history
+    .filter((c) => c.role === "user")
+    .flatMap((c) => c.parts.filter((p) => typeof p.text === "string" && !p.text.startsWith("[System note")).map((p) => p.text as string))
+    .slice(-4)
+    .join(" ");
+  const cleaned = stripNudges(reply, recentCustomerWords, events);
+  if (cleaned.removed.length) {
+    logAudit("system", "nudge_removed", "Removed an unprompted cancel/refund offer from the reply", { removed: cleaned.removed });
+    reply = cleaned.text;
   }
 
   saveHistory(conv.id, history);

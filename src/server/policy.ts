@@ -13,6 +13,11 @@ export const PolicySchema = z.object({
   dailyRefundCap: z.number().min(0).max(100_000),
   /** Whether the agent may cancel a customer's subscription without approval. */
   allowCustomerCancel: z.boolean(),
+  /**
+   * Optional one-line offer for a customer who has already asked to cancel, for example "20% off for 3 months".
+   * It is mentioned once and never blocks or delays the cancellation. Empty means no offer.
+   */
+  retentionOffer: z.string().trim().max(200).default(""),
 });
 export type Policy = z.infer<typeof PolicySchema>;
 
@@ -22,6 +27,7 @@ export const DEFAULT_POLICY: Policy = {
   refundWindowDays: 30,
   dailyRefundCap: 50,
   allowCustomerCancel: true,
+  retentionOffer: "",
 };
 
 export function getPolicy(): Policy {

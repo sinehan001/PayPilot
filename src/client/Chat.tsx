@@ -26,6 +26,7 @@ const TOOL_LABEL: Record<string, string> = {
   request_refund: "Requested a refund",
   check_request_status: "Checked a request",
   list_my_skills: "Checked what I can help with",
+  request_human_help: "Asked a person to follow up",
 };
 
 /** What a successful result is called, so "Done" is never vague. */
@@ -35,6 +36,7 @@ const OK_LABEL: Record<string, string> = {
   check_request_status: "Status found",
   list_my_skills: "Found",
   get_subscription: "Found",
+  request_human_help: "Sent to a person",
 };
 
 const RESULT: Record<string, { label: string; cls: string }> = {

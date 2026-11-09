@@ -280,6 +280,159 @@ describe("guardrails", () => {
     });
   });
 
+  describe("merchant protection: never nudge, never block", () => {
+    it("strips an unprompted offer to cancel or refund from any AI's reply, and keeps the rest", async () => {
+      fresh();
+      const pusher = {
+        name: "pusher",
+        live: false,
+        async generate() {
+          return [{ text: "The $14.99 is your StreamBox plan. Would you like to cancel it or get a refund? It renews on the 30th." }];
+        },
+      };
+      const out = await agent.runAgent({
+        conversationId: conv.createConversation().id,
+        message: "Why was I charged $14.99?",
+        customer: ctx.customer,
+        llm: pusher as any,
+      });
+      assert.doesNotMatch(out.reply, /cancel|refund/i);
+      assert.match(out.reply, /\$14\.99 is your StreamBox plan/);
+      assert.match(out.reply, /renews on the 30th/);
+    });
+
+    it("leaves cancel and refund talk alone once the customer has raised it", async () => {
+      fresh();
+      const helper = { name: "helper", live: false, async generate() { return [{ text: "Would you like me to go ahead and cancel it?" }]; } };
+      const out = await agent.runAgent({
+        conversationId: conv.createConversation().id,
+        message: "I think I want to cancel my plan",
+        customer: ctx.customer,
+        llm: helper as any,
+      });
+      assert.match(out.reply, /cancel/i);
+    });
+
+    it("never turns a reply into nothing", async () => {
+      const rc = await import("./reply-check.ts");
+      const r = rc.stripNudges("Would you like to cancel?", "hello", []);
+      assert.equal(r.text, "Would you like to cancel?");
+    });
+
+    const askToCancel = async (offer: string) => {
+      policy.setPolicy({ ...policy.DEFAULT_POLICY, retentionOffer: offer });
+      const c = conv.createConversation();
+      const seen = [{ role: "user" as const, parts: [{ functionResponse: { name: "list_charges", response: { result: { status: "ok", data: { charges: [], subscriptions: [{ id: "S-1002" }] } } } } }] }];
+      const args = { subscription_id: "S-1002", reason: "customer asked to cancel" };
+      const call = (message: string) => tools.callTool("cancel_subscription", args, { ...ctx, conversationId: c.id, userMessage: message, history: seen });
+      conv.addMessage(c.id, { role: "user", text: "please cancel CloudNotes" });
+      const first: any = await call("please cancel CloudNotes");
+      conv.addMessage(c.id, { role: "user", text: "Yes, cancel it." });
+      const second: any = await call("Yes, cancel it.");
+      return { first, second };
+    };
+
+    it("a retention offer is mentioned once, and the customer can still cancel straight away", async () => {
+      fresh();
+      const { first, second } = await askToCancel("20% off for 3 months if you stay");
+      assert.equal(first.status, "needs_confirmation");
+      assert.equal(first.offer, "20% off for 3 months if you stay");
+      assert.match(first.message, /ONCE/);
+      assert.match(first.message, /keep it/);
+      // It never blocked anything: one "yes" and the subscription is cancelled.
+      assert.equal(second.status, "ok");
+      assert.equal(store.getSubscription("S-1002")?.status, "CANCELLED");
+    });
+
+    it("no offer is mentioned when the merchant has not set one", async () => {
+      fresh();
+      const { first } = await askToCancel("");
+      assert.equal(first.status, "needs_confirmation");
+      assert.equal(first.offer, undefined);
+      assert.doesNotMatch(first.message, /offer/i);
+    });
+  });
+
+  describe("every promise is backed by a deed", () => {
+    it("asking for a person creates a real request, and the merchant's reply lands in the customer's chat", async () => {
+      fresh();
+      const c = conv.createConversation();
+      const r: any = await tools.callTool("request_human_help", { topic: "Customer wants to discuss a billing problem" }, { ...ctx, conversationId: c.id });
+      assert.equal(r.status, "ok");
+      const [h] = tools.listApprovals("PENDING").filter((a) => a.kind === "handoff");
+      assert.ok(h, "a handoff must appear in the merchant's queue");
+      assert.equal(h.conversation_id, c.id);
+
+      const before: any = await tools.callTool("check_request_status", { approval_id: h.id }, ctx);
+      assert.match(JSON.stringify(before.data), /asked to follow up/);
+
+      const done = await tools.decideApproval(h.id, true, { reason: "Hi Priya, we've looked at this and fixed it." });
+      assert.equal(done.status, "ok");
+      const last = conv.getMessages(c.id).at(-1)!;
+      assert.equal(last.model, "acme-digital");
+      assert.match(last.text, /fixed it/);
+      assert.equal(store.getCharge("C-2004")?.status, "COMPLETED", "a handoff changes nothing on the account");
+
+      const after: any = await tools.callTool("check_request_status", { approval_id: h.id }, ctx);
+      assert.match(JSON.stringify(after.data), /replied/i);
+      const other: any = await tools.callTool("check_request_status", { approval_id: h.id }, { customer: "mallory@example.com" });
+      assert.equal(other.status, "error");
+    });
+
+    it("a reply that says a discount was applied is always replaced: nothing can apply one", async () => {
+      fresh();
+      const liar = { name: "liar", live: false, async generate() { return [{ text: "Great, the 20% discount is already applied to your account." }]; } };
+      const out = await agent.runAgent({ conversationId: conv.createConversation().id, message: "keep it", customer: ctx.customer, llm: liar as any });
+      assert.doesNotMatch(out.reply, /applied/i);
+      assert.match(out.reply, /haven't made any changes/i);
+    });
+
+    it("'a person will reply' is only allowed after a real request was made", async () => {
+      fresh();
+      const boaster = { name: "boaster", live: false, async generate() { return [{ text: "I've passed this to our team and a person will reply shortly." }]; } };
+      const bad = await agent.runAgent({ conversationId: conv.createConversation().id, message: "help", customer: ctx.customer, llm: boaster as any });
+      assert.doesNotMatch(bad.reply, /passed this to our team/);
+      assert.equal(tools.listApprovals("PENDING").filter((a) => a.kind === "handoff").length, 0);
+
+      const honest = {
+        name: "honest",
+        live: false,
+        async generate(_s: string, h: any[]) {
+          const n = h.filter((c) => c.parts.some((p: any) => p.functionResponse)).length;
+          return n === 0
+            ? [{ functionCall: { name: "request_human_help", args: { topic: "Customer asked for a person" } } }]
+            : [{ text: "I've passed this to our team and a person will reply here." }];
+        },
+      };
+      const good = await agent.runAgent({ conversationId: conv.createConversation().id, message: "help", customer: ctx.customer, llm: honest as any });
+      assert.match(good.reply, /passed this to our team/);
+      assert.equal(tools.listApprovals("PENDING").filter((a) => a.kind === "handoff").length, 1);
+    });
+
+    it("scripted AI: a customer who asks for a person really gets a request, with its reference", async () => {
+      fresh();
+      const out = await agent.runAgent({ conversationId: conv.createConversation().id, message: "Can I speak to a person at Acme Digital?", customer: ctx.customer, llm: llm.mockLLM() });
+      const [h] = tools.listApprovals("PENDING").filter((a) => a.kind === "handoff");
+      assert.ok(h);
+      assert.match(out.reply, new RegExp(h.id));
+      assert.match(out.reply, /haven't changed anything/i);
+    });
+
+    it("scripted AI: choosing to stay with the offer sends it to a person, changes nothing, and claims nothing", async () => {
+      fresh();
+      policy.setPolicy({ ...policy.DEFAULT_POLICY, retentionOffer: "20% off for 3 months" });
+      const c = conv.createConversation();
+      const run = (m: string) => agent.runAgent({ conversationId: c.id, message: m, customer: ctx.customer, llm: llm.mockLLM() });
+      const ask = await run("Please cancel CloudNotes.");
+      assert.match(ask.reply, /20% off for 3 months/);
+      const stay = await run("keep it");
+      assert.match(stay.reply, /asked a person/i);
+      assert.doesNotMatch(stay.reply, /applied/i);
+      assert.equal(store.getSubscription("S-1002")?.status, "ACTIVE");
+      assert.equal(tools.listApprovals("PENDING").filter((a) => a.kind === "handoff").length, 1);
+    });
+  });
+
   describe("decisions need a reason that the customer sees", () => {
     const queued = async () => {
       const c = conv.createConversation();
