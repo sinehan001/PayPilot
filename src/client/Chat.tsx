@@ -24,6 +24,16 @@ const TOOL_LABEL: Record<string, string> = {
   cancel_subscription: "Requested a cancellation",
   request_refund: "Requested a refund",
   check_request_status: "Checked a request",
+  list_my_skills: "Checked what I can help with",
+};
+
+/** What a successful result is called, so "Done" is never vague. */
+const OK_LABEL: Record<string, string> = {
+  cancel_subscription: "Cancelled",
+  request_refund: "Refunded",
+  check_request_status: "Status found",
+  list_my_skills: "Found",
+  get_subscription: "Found",
 };
 
 const RESULT: Record<string, { label: string; cls: string }> = {
@@ -66,7 +76,7 @@ function Chips({ events }: { events: AgentEvent[] }) {
           const r = RESULT[e.result.status] ?? RESULT.error;
           return (
             <span key={i} className={`rounded-full px-2.5 py-1 text-xs font-medium ring-1 ${r.cls}`}>
-              {r.label}
+              {e.result.status === "ok" ? (OK_LABEL[e.name] ?? r.label) : r.label}
             </span>
           );
         }
