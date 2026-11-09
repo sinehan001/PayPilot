@@ -223,6 +223,33 @@ export function mockLLM(): LLM {
       const amountMatch = msg.match(/\$?\s?(\d+(?:\.\d{1,2})?)/);
       const amount = amountMatch ? parseFloat(amountMatch[1]) : undefined;
 
+      // An account action just ran in this turn: report exactly what happened, before anything else can answer.
+      const wr = res[res.length - 1];
+      if (wr && (wr.name === "request_refund" || wr.name === "cancel_subscription")) {
+        const last = wr;
+        const r = last.response.result;
+        if (r.status === "needs_confirmation")
+          return [
+            {
+              text: r.retention
+                ? [
+                    `I'm sorry to hear you're thinking about leaving ${r.retention.product}.`,
+                    `You've been with us since ${r.retention.member_since}, at ${r.retention.price} ${r.retention.interval}.`,
+                    r.retention.pitch ? r.retention.pitch : "",
+                    `If you'd like to stay, Acme Digital can do this for you: ${r.retention.offer}.`,
+                    `Just say "keep it" and I'll pass that on to the team. Or, if you'd rather go ahead, reply "yes" and I'll cancel it right now.`,
+                  ]
+                    .filter(Boolean)
+                    .join(" ")
+                : `Before I do this, please confirm: ${r.summary}. Reply "yes" and I'll go ahead.`,
+            },
+          ];
+        if (r.status === "ok") return [{ text: last.name === "cancel_subscription" ? "Done. Your subscription is cancelled and won't renew." : `Done. Your refund of ${money(r.data.amount)} was approved and issued.` }];
+        if (r.status === "pending_approval") return [{ text: `I've sent this for approval (ref ${r.approvalId}). ${r.message} You'll hear back once it's reviewed.` }];
+        if (r.status === "denied") return [{ text: `I can't do that: ${r.reason}` }];
+        return [{ text: `That didn't work: ${r.message}` }];
+      }
+
       // The customer said yes to a proposed refund/cancellation: call the same tool again with the same arguments.
       const proposal = lastProposal(history);
       if (res.length === 0 && proposal && /^\s*(yes|yep|yeah|yup|y|ok|okay|sure|confirm|confirmed|go ahead|do it|please do|proceed)\b/.test(msg))
@@ -308,30 +335,6 @@ export function mockLLM(): LLM {
         );
         if (!pick) return [{ text: "I couldn't match that to one charge. Tell me the amount or product." }];
         return [{ functionCall: { name: "request_refund", args: { charge_id: pick.id, amount: pick.amount, reason: "Customer requested a refund." } } }];
-      }
-
-      if (last.name === "cancel_subscription" || last.name === "request_refund") {
-        const r = last.response.result;
-        if (r.status === "needs_confirmation")
-          return [
-            {
-              text: r.retention
-                ? [
-                    `I'm sorry to hear you're thinking about leaving ${r.retention.product}.`,
-                    `You've been with us since ${r.retention.member_since}, at ${r.retention.price} ${r.retention.interval}.`,
-                    r.retention.pitch ? r.retention.pitch : "",
-                    `If you'd like to stay, Acme Digital can do this for you: ${r.retention.offer}.`,
-                    `Just say "keep it" and I'll pass that on to the team. Or, if you'd rather go ahead, reply "yes" and I'll cancel it right now.`,
-                  ]
-                    .filter(Boolean)
-                    .join(" ")
-                : `Before I do this, please confirm: ${r.summary}. Reply "yes" and I'll go ahead.`,
-            },
-          ];
-        if (r.status === "ok") return [{ text: last.name === "cancel_subscription" ? "Done. Your subscription is cancelled and won't renew." : `Done. Your refund of ${money(r.data.amount)} was approved and issued.` }];
-        if (r.status === "pending_approval") return [{ text: `I've sent this for approval (ref ${r.approvalId}). ${r.message} You'll hear back once it's reviewed.` }];
-        if (r.status === "denied") return [{ text: `I can't do that: ${r.reason}` }];
-        return [{ text: `That didn't work: ${r.message}` }];
       }
 
       // explain
