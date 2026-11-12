@@ -199,6 +199,10 @@ Everything is optional. See [`.env.example`](.env.example).
 | `npm run safety` | The safety suite above |
 | `npm run paypal:setup` / `paypal:sync` | Create and link real sandbox objects |
 
+## Postman collection
+
+[`postman/PayPilot.postman_collection.json`](postman/PayPilot.postman_collection.json) exercises the API end to end: health, reset, explain a charge, a refund that must wait for the customer's separate "yes", a prompt-injection attempt, the merchant's approval queue (a decision needs a reason), the tamper-evident audit log, skills and policy. Import it into Postman and run the folder with the Collection Runner. Set the `baseUrl` variable to `http://localhost:3001` or the hosted demo (default).
+
 ## Honest limitations
 
 - It is a **prototype**: one fixed demo customer and no login. The merchant view is not access-controlled. A real deployment needs authentication, per-merchant data, and PayPal webhooks.
