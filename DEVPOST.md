@@ -1,6 +1,6 @@
 # PayPilot: AI billing help you can trust with money
 
-*Paste the sections below into the Devpost form. Replace `<video-url>` once the video is uploaded.*
+*Paste the sections below into the Devpost form.*
 
 ---
 
@@ -36,5 +36,6 @@ TypeScript, Node.js, Express, React, Vite, Tailwind CSS, SQLite (better-sqlite3)
 ## Links
 
 - Code: https://github.com/sinehan001/PayPilot (MIT licensed)
-- Demo video: `<video-url>`
+- Demo video: https://youtu.be/XaD4zWYbp78
+- Live demo: https://paypilot-gi92.onrender.com/
 - How to run without any keys: see the README

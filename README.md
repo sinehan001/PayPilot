@@ -5,6 +5,8 @@ Customers ask it about charges, cancellations and refunds in plain English. It d
 
 [MIT licensed](LICENSE) · Built for the PayPal AI Hackathon · Node 22 · React · SQLite · PayPal Sandbox
 
+**Demo video (2:40):** https://youtu.be/XaD4zWYbp78 · **Live demo:** https://paypilot-gi92.onrender.com/
+
 | Customer chat | Merchant dashboard |
 |---|---|
 | ![Customer chat with the AI, activity badges and the customer's account](docs/screenshots/customer-chat.jpg) | ![Merchant view: a refund waiting for approval, with a required reason box](docs/screenshots/merchant-approvals.jpg) |
