@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: paypilot
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+# No API keys are set on purpose: the app runs in Demo Mode (seeded data,
+# scripted AI), so judges can try everything for free.
